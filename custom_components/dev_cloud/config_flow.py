@@ -201,14 +201,11 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Get the options flow for this handler."""
-        return DevCloudOptionsFlow(config_entry)
+        return DevCloudOptionsFlow()
 
 
 class DevCloudOptionsFlow(OptionsFlow):
     """Handle options for an existing DevCloud entry."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        self.config_entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage options."""

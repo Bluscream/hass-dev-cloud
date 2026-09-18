@@ -146,7 +146,7 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
                 "upstream": r.upstream,
                 "updated_at": r.updated_at,
             }
-            for r in repos
+            for r in repos[:25]
         ]
 
         return {
@@ -228,7 +228,7 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
                     "files_count": p.files_count,
                     "updated_at": p.updated_at,
                 }
-                for p in pastes
+                for p in pastes[:25]
             ],
         }
 
