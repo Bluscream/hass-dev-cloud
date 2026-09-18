@@ -146,7 +146,8 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors["base"] = "rate_limited"
                 except DevCloudProviderError:
                     errors["base"] = "cannot_connect"
-                except Exception:
+                except Exception as err:
+                    _LOGGER.exception("Unexpected error validating %s account %s: %s", platform, account, err)
                     errors["base"] = "unknown"
 
                 if not errors:
