@@ -2,7 +2,7 @@
 
 Sensors deliberately carry *only* aggregated counts and scalar metrics in their state
 attributes. The full detail (repository lists, releases, packages, notifications, running
-jobs, ...) is exported to `/local/dev_cloud/<platform>/<account>.json` by `storage.py`. The
+jobs, ...) is exported to `/local/dev/<platform>/<account>.json` by `storage.py`. The
 profile sensor carries the `json_url` pointing at it — just the one entity, since the link is
 identical for every entity on the account. See that module for the why.
 

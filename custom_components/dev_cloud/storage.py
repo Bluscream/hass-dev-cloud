@@ -1,8 +1,8 @@
 """JSON cache export for Developer Cloud Services.
 
 Every coordinator update dumps the complete provider snapshot to
-``<config>/www/dev_cloud/<platform>/<account>.json``, which Home Assistant serves
-statically at ``/local/dev_cloud/<platform>/<account>.json``.
+``<config>/www/dev/<platform>/<account>.json``, which Home Assistant serves
+statically at ``/local/dev/<platform>/<account>.json``.
 
 This exists so sensors can keep *only* aggregated counts in their state
 attributes: bulky lists (repositories, releases, packages, notifications, ...)
@@ -29,7 +29,9 @@ from .models import DevCloudData
 
 _LOGGER = logging.getLogger(__name__)
 
-WWW_SUBDIR = "dev_cloud"
+# Directory under <config>/www. Deliberately not the domain name: it appears in every
+# published URL, so it stays short.
+WWW_SUBDIR = "dev"
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^a-z0-9._-]+")
 
