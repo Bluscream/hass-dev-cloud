@@ -348,7 +348,11 @@ class DevCloudStarsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(r.stars for r in counted_repos(self.coordinator))
+        data = self.coordinator.data
+        # Registries expose stars on the package rather than on a repository.
+        return sum(r.stars for r in counted_repos(self.coordinator)) + sum(
+            p.star_count or 0 for p in data.packages
+        )
 
 
 class DevCloudWatchersSensor(DevCloudBaseEntity, SensorEntity):
@@ -405,14 +409,7 @@ class DevCloudPullsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        # Sum from packages or repository extras
-        packages_pulls = sum(p.pull_count or 0 for p in self.coordinator.data.packages)
-        repos_pulls = sum(
-            int(r.extra.get("pull_count", 0) or 0)
-            for r in self.coordinator.data.repos
-            if isinstance(r.extra, dict)
-        )
-        return max(packages_pulls, repos_pulls)
+        return sum(p.pull_count or 0 for p in self.coordinator.data.packages)
 
 
 class DevCloudReleasesSensor(DevCloudBaseEntity, SensorEntity):
@@ -544,14 +541,6 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
         }
 
 
-def _has_pulls(coordinator: DevCloudCoordinator) -> bool:
-    """Docker Hub reports pulls on packages; other registries stash it on the repo extra."""
-    data = coordinator.data
-    return any(p.pull_count for p in data.packages) or any(
-        isinstance(r.extra, dict) and r.extra.get("pull_count") for r in data.repos
-    )
-
-
 #: Sensor classes paired with the test for whether this account has data behind them.
 #: Evaluated once at platform setup, so a sensor that gains data later appears on reload.
 _OPTIONAL_SENSORS: tuple[
@@ -581,7 +570,7 @@ _OPTIONAL_SENSORS: tuple[
     (DevCloudReleasesSensor, lambda c: bool(counted_releases(c))),
     (DevCloudReleaseAssetsSensor, lambda c: bool(counted_releases(c))),
     (DevCloudDownloadsSensor, lambda c: bool(counted_releases(c))),
-    (DevCloudPullsSensor, _has_pulls),
+    (DevCloudPullsSensor, lambda c: any(p.pull_count for p in c.data.packages)),
     (
         DevCloudSponsorsSensor,
         lambda c: c.data.sponsors_count is not None or c.data.sponsoring_count is not None,

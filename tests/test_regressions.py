@@ -169,3 +169,30 @@ def test_paginating_a_url_that_already_has_query_parameters_replaces_them() -> N
 
     assert paged.query.getall("page") == ["3"]
     assert paged.query.getall("limit") == ["100"]
+
+
+def test_no_top_level_count_duplicates_a_list_length() -> None:
+    """Every list is fetched to completion, so any count beside one is a second copy."""
+    from dev_cloud.models import DevCloudData, ProfileData
+
+    data = DevCloudData(profile=ProfileData(username="x"), sponsors_count=3)
+    payload = storage._serialize("github", "x", data)
+
+    lists = {k: v for k, v in payload.items() if isinstance(v, list)}
+    for key, value in payload.items():
+        if not isinstance(value, int):
+            continue
+        for list_key, items in lists.items():
+            assert not (items and len(items) == value and key.startswith(list_key)), (
+                f"{key} duplicates len({list_key})"
+            )
+
+
+def test_docker_hub_does_not_emit_images_as_both_packages_and_repos() -> None:
+    """Docker Hub images were emitted twice, as a package and an identical repository."""
+    import inspect
+
+    from dev_cloud.providers.dockerhub import DockerHubProvider
+
+    source = inspect.getsource(DockerHubProvider)
+    assert "RepoData" not in source, "Docker Hub images are packages, not repositories"

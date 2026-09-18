@@ -7,9 +7,10 @@ import logging
 from typing import ClassVar
 
 from aiohttp import ClientSession
+from yarl import URL
 
 from ..const import PLATFORM_DOCKERHUB
-from ..models import DevCloudData, PackageData, ProfileData, RepoData
+from ..models import DevCloudData, PackageData, ProfileData
 from .base import (
     BaseDevCloudProvider,
     DevCloudAuthError,
@@ -116,11 +117,15 @@ class DockerHubProvider(BaseDevCloudProvider):
             created_at=created_at,
         )
 
-    async def _async_fetch_packages(self) -> tuple[list[PackageData], list[RepoData]]:
-        """Every image in the namespace, as both a package and a repository entry."""
+    async def _async_fetch_packages(self) -> list[PackageData]:
+        """Every image in the namespace.
+
+        Docker Hub calls these "repositories", but they are container images — the same
+        thing this integration models as a package everywhere else. They were previously
+        emitted as both a package and a repository, which duplicated every field.
+        """
         url = self.base_url / "v2/namespaces" / self.account_name / "repositories"
         packages: list[PackageData] = []
-        repos: list[RepoData] = []
 
         items = await self.async_get_all_pages(
             url,
@@ -130,36 +135,18 @@ class DockerHubProvider(BaseDevCloudProvider):
 
         for item in items:
             name = item.get("name", "")
-            full_name = f"{self.account_name}/{name}"
-            pull_count = item.get("pull_count", 0)
-            star_count = item.get("star_count", 0)
-            desc = item.get("description")
-            updated = item.get("last_updated")
-
             packages.append(
                 PackageData(
                     name=name,
-                    url=f"https://hub.docker.com/r/{full_name}",
-                    description=desc,
-                    pull_count=pull_count,
-                    star_count=star_count,
-                    updated_at=updated,
-                )
-            )
-            repos.append(
-                RepoData(
-                    name=name,
-                    full_name=full_name,
-                    url=f"https://hub.docker.com/r/{full_name}",
-                    description=desc,
-                    is_private=bool(item.get("is_private")),
-                    stars=star_count,
-                    updated_at=updated,
-                    extra={"pull_count": pull_count},
+                    url=str(URL("https://hub.docker.com/r") / self.account_name / name),
+                    description=item.get("description"),
+                    pull_count=item.get("pull_count", 0),
+                    star_count=item.get("star_count", 0),
+                    updated_at=item.get("last_updated"),
                 )
             )
 
-        return packages, repos
+        return packages
 
     async def async_fetch(self) -> DevCloudData:
         """Assemble a snapshot, refreshing only the resources that are due."""
@@ -170,14 +157,12 @@ class DockerHubProvider(BaseDevCloudProvider):
         profile: ProfileData = await self.async_resource(
             "profile", self._async_fetch_profile, ProfileData(username=self.account_name)
         )
-        bundle: tuple[list[PackageData], list[RepoData]] = await self.async_resource(
-            "packages", self._async_fetch_packages, ([], [])
+        packages: list[PackageData] = await self.async_resource(
+            "packages", self._async_fetch_packages, []
         )
-        packages, repos = bundle
 
         return DevCloudData(
             profile=profile,
-            repos=repos,
             packages=packages,
             scheduling=self.scheduler.diagnostics(),
         )
