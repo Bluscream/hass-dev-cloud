@@ -132,6 +132,8 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
 
     _attr_icon = "mdi:source-repository-multiple"
     _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "repos"
+    _attr_suggested_display_precision = 0
 
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "repositories")
@@ -191,6 +193,8 @@ class DevCloudOrganizationsSensor(DevCloudBaseEntity, SensorEntity):
 
     _attr_icon = "mdi:domain"
     _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "orgs"
+    _attr_suggested_display_precision = 0
 
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "organizations")
@@ -227,6 +231,8 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
 
     _attr_icon = "mdi:code-braces"
     _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "pastes"
+    _attr_suggested_display_precision = 0
 
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "pastes")
@@ -273,6 +279,8 @@ class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
 
     _attr_icon = "mdi:package-variant-closed"
     _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "packages"
+    _attr_suggested_display_precision = 0
 
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "packages")
@@ -320,6 +328,8 @@ class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
 
     _attr_icon = "mdi:bell"
     _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "notifications"
+    _attr_suggested_display_precision = 0
 
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "notifications")
@@ -361,6 +371,8 @@ class DevCloudOpenIssuesSensor(DevCloudBaseEntity, SensorEntity):
 
     _attr_icon = "mdi:alert-circle-outline"
     _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "issues"
+    _attr_suggested_display_precision = 0
 
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "open_issues")
@@ -390,6 +402,8 @@ class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
 
     _attr_icon = "mdi:source-pull"
     _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "PRs"
+    _attr_suggested_display_precision = 0
 
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "open_prs")
