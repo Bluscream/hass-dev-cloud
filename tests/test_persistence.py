@@ -19,12 +19,23 @@ async def provider() -> Any:
         yield get_provider("github", session=session, account_name="Bluscream")
 
 
+def _repo_with_releases() -> RepoData:
+    repo = RepoData(name="r", full_name="Bluscream/r", url="u", stars=5)
+    repo.releases = [{"tag": "v1", "assets": [{"downloads": 3}]}]
+    repo.branches = [{"name": "main", "sha": "abc"}]
+    repo.tags = [{"name": "v1", "sha": "abc"}]
+    return repo
+
+
 def _snapshot() -> dict[str, Any]:
     data = DevCloudData(
         profile=ProfileData(username="Bluscream", followers=296),
-        repos=[RepoData(name="r", full_name="Bluscream/r", url="u", stars=5)],
-        orgs=[OrgData(name="Org", is_owned=True, repos=[RepoData(name="x", full_name="Org/x", url="u")])],
-        releases=[{"repository": "Bluscream/r", "assets": [{"downloads": 3}]}],
+        repos=[_repo_with_releases()],
+        orgs=[
+            OrgData(
+                name="Org", is_owned=True, repos=[RepoData(name="x", full_name="Org/x", url="u")]
+            )
+        ],
     )
     now = time.time()
     data.resources = {
@@ -114,3 +125,14 @@ def test_persisted_state_round_trips_through_the_scheduler() -> None:
 
     assert second.diagnostics()["repos"]["cost"] == 6
     assert not second.should_fetch("repos")
+
+
+async def test_restore_rebuilds_the_release_and_ref_detail(provider: Any) -> None:
+    """Releases, branches and tags live inside their repository, so the grouped resources
+    are reconstructed from there rather than stored a second time."""
+    provider.restore(_snapshot())
+
+    detail = provider._resource_values["releases"]["Bluscream/r"]
+    assert detail["releases"][0]["assets"][0]["downloads"] == 3
+    assert detail["branches"][0]["name"] == "main"
+    assert detail["tags"][0]["name"] == "v1"

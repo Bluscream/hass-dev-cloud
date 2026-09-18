@@ -32,9 +32,12 @@ def counted_repos(coordinator: DevCloudCoordinator) -> list[RepoData]:
 
 
 def counted_releases(coordinator: DevCloudCoordinator) -> list[dict[str, Any]]:
-    """Releases belonging to repositories that count toward the totals."""
-    allowed = {r.full_name for r in counted_repos(coordinator)}
-    return [r for r in coordinator.data.releases if r.get("repository") in allowed]
+    """Releases of every repository that counts towards the totals.
+
+    Flattened from the repositories rather than read from a list beside them, so the
+    organisation rule applies here exactly as it does to stars and forks.
+    """
+    return [release for repo in counted_repos(coordinator) for release in repo.releases]
 
 
 def assets(release: dict[str, Any]) -> list[dict[str, Any]]:

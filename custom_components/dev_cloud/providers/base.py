@@ -140,7 +140,6 @@ class BaseDevCloudProvider(ABC):
             ("pastes", data.pastes),
             ("packages", data.packages),
             ("notifications", data.notifications),
-            ("releases", data.releases),
         ):
             if value:
                 self._resource_values[key] = value
@@ -151,14 +150,40 @@ class BaseDevCloudProvider(ABC):
         if org_repos:
             self._resource_values["org_repos"] = org_repos
 
-        # Issues and pull requests are stored inside their repository, so the grouped
-        # resources are rebuilt from there rather than persisted a second time.
+        # Issues, pull requests, releases, branches and tags are all stored inside their
+        # repository, so the grouped resources are rebuilt from there rather than persisted
+        # a second time under their own keys.
         for key, attr in (("issues", "issues"), ("prs", "prs")):
             grouped = {
                 repo.full_name: getattr(repo, attr) for repo in data.repos if getattr(repo, attr)
             }
             if grouped:
                 self._resource_values[key] = grouped
+
+        detail = {
+            repo.full_name: {
+                "releases": repo.releases,
+                "branches": repo.branches,
+                "tags": repo.tags,
+            }
+            for repo in data.repos
+            if repo.releases or repo.branches or repo.tags
+        }
+        if detail:
+            self._resource_values["releases"] = detail
+
+        org_detail = {
+            repo.full_name: {
+                "releases": repo.releases,
+                "branches": repo.branches,
+                "tags": repo.tags,
+            }
+            for org in data.orgs
+            for repo in org.repos
+            if repo.releases or repo.branches or repo.tags
+        }
+        if org_detail:
+            self._resource_values["org_releases"] = org_detail
 
     async def async_resource[T](
         self,

@@ -16,24 +16,29 @@ class _FakeCoordinator:
         self.include_non_owned_orgs = include_non_owned_orgs
 
 
-def _repo(full_name: str, stars: int = 0, forks: int = 0) -> RepoData:
-    return RepoData(name=full_name.split("/")[-1], full_name=full_name, url="", stars=stars,
-                    forks=forks)
+def _repo(full_name: str, stars: int = 0, forks: int = 0, downloads: int = 0) -> RepoData:
+    repo = RepoData(
+        name=full_name.split("/")[-1], full_name=full_name, url="", stars=stars, forks=forks
+    )
+    if downloads:
+        repo.releases = [{"tag": "v1", "assets": [{"downloads": downloads}]}]
+    return repo
 
 
 def _data() -> DevCloudData:
     return DevCloudData(
         profile=ProfileData(username="Bluscream"),
-        repos=[_repo("Bluscream/own", stars=679, forks=159)],
+        repos=[_repo("Bluscream/own", stars=679, forks=159, downloads=100)],
         orgs=[
-            OrgData(name="EpicGames", is_owned=False, repos=[_repo("EpicGames/ue", stars=50000)]),
-            OrgData(name="Mine", is_owned=True, repos=[_repo("Mine/mods", stars=12)]),
+            OrgData(
+                name="EpicGames",
+                is_owned=False,
+                repos=[_repo("EpicGames/ue", stars=50000, downloads=999999)],
+            ),
+            OrgData(
+                name="Mine", is_owned=True, repos=[_repo("Mine/mods", stars=12, downloads=50)]
+            ),
             OrgData(name="Unknown", is_owned=None, repos=[_repo("Unknown/x", stars=999)]),
-        ],
-        releases=[
-            {"repository": "Bluscream/own", "assets": [{"downloads": 100}]},
-            {"repository": "EpicGames/ue", "assets": [{"downloads": 999999}]},
-            {"repository": "Mine/mods", "assets": [{"downloads": 50}]},
         ],
     )
 
@@ -171,3 +176,19 @@ def test_repo_issue_count_is_dropped_once_both_lists_are_present() -> None:
     assert "open_issues" not in payload["repos"][0]
     assert len(payload["repos"][0]["issues"]) == 3
     assert len(payload["repos"][0]["prs"]) == 2
+
+
+def test_releases_are_flattened_from_the_repositories_that_count() -> None:
+    assert len(aggregation.counted_releases(_coordinator(include=False))) == 2
+    assert len(aggregation.counted_releases(_coordinator(include=True))) == 3
+
+
+def test_a_nested_release_does_not_name_its_own_repository() -> None:
+    """It hangs off the repository, so repeating the name inside it is a duplicate."""
+    from dev_cloud import storage
+
+    repo = _repo("o/a", downloads=5)
+    payload = storage._serialize(
+        "github", "x", DevCloudData(profile=ProfileData(username="x"), repos=[repo])
+    )
+    assert "repository" not in payload["repos"][0]["releases"][0]

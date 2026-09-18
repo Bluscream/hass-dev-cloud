@@ -24,6 +24,7 @@ from .queries import (
     GRAPHQL_NESTED_PAGE_SIZE,
     GRAPHQL_PAGE_SIZE,
     ORG_RELEASES_QUERY,
+    REFS_QUERY,
     REPO_RELEASES_QUERY,
     USER_RELEASES_QUERY,
 )
@@ -99,7 +100,6 @@ async def _build_release(
         assets.extend(await _release_assets(graphql, release["id"], page.get("endCursor")))
 
     return {
-        "repository": name_with_owner,
         "name": release.get("name") or release.get("tagName"),
         "tag": release.get("tagName"),
         "published_at": release.get("publishedAt"),
@@ -109,40 +109,71 @@ async def _build_release(
     }
 
 
-async def async_fetch_all_releases(graphql: GraphQLCaller, login: str) -> list[dict[str, Any]]:
-    """Every release of every repository owned by the account."""
+#: Per-repository detail keyed by "owner/name": its releases, branches and tags.
+type RepoDetail = dict[str, dict[str, list[dict[str, Any]]]]
+
+
+async def async_fetch_all_releases(graphql: GraphQLCaller, login: str) -> RepoDetail:
+    """Releases, branches and tags for every repository owned by the account."""
     return await _releases_for(graphql, USER_RELEASES_QUERY, login, "user")
 
 
-async def async_fetch_org_releases(
-    graphql: GraphQLCaller, orgs: list[OrgData]
-) -> list[dict[str, Any]]:
-    """Every release across the given organisations' repositories."""
+async def async_fetch_org_releases(graphql: GraphQLCaller, orgs: list[OrgData]) -> RepoDetail:
+    """The same detail across the given organisations' repositories."""
 
-    async def _fetch(org: OrgData) -> list[dict[str, Any]]:
+    async def _fetch(org: OrgData) -> RepoDetail:
         return await _releases_for(graphql, ORG_RELEASES_QUERY, org.name, "organization")
 
     results = await async_map_limited(orgs, _fetch, RUNNING_JOBS_CONCURRENCY)
 
-    releases: list[dict[str, Any]] = []
+    detail: RepoDetail = {}
     for result in results:
         if isinstance(result, BaseException):
             _LOGGER.debug("Org release listing failed: %s", result)
             continue
-        releases.extend(result)
-    return releases
+        detail.update(result)
+    return detail
+
+
+async def _refs(
+    graphql: GraphQLCaller, name_with_owner: str, prefix: str, connection: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Flatten a refs connection, completing it if the first page was not the only one."""
+    owner, _, name = name_with_owner.partition("/")
+    refs = [
+        {"name": node.get("name"), "sha": (node.get("target") or {}).get("oid")}
+        for node in connection.get("nodes") or []
+    ]
+
+    page = connection.get("pageInfo") or {}
+    cursor = page.get("endCursor") if page.get("hasNextPage") else None
+    for _ in range(MAX_PAGES):
+        if not cursor:
+            break
+        data = await graphql(
+            REFS_QUERY, {"owner": owner, "name": name, "prefix": prefix, "cursor": cursor}
+        )
+        conn = ((data.get("repository") or {}).get("refs")) or {}
+        refs.extend(
+            {"name": node.get("name"), "sha": (node.get("target") or {}).get("oid")}
+            for node in conn.get("nodes") or []
+        )
+        page = conn.get("pageInfo") or {}
+        cursor = page.get("endCursor") if page.get("hasNextPage") else None
+
+    return refs
 
 
 async def _releases_for(
     graphql: GraphQLCaller, query: str, login: str, root_key: str
-) -> list[dict[str, Any]]:
+) -> RepoDetail:
     """Every release of every repository under one user or organisation.
 
-    Three nested GraphQL connections are paginated: repositories, releases per
-    repository, and assets per release. Nothing is capped by item count, so
-    `len(releases)` and the per-release asset lists are authoritative.
+    Every connection is paginated to completion — repositories, releases per repository,
+    assets per release, and the branch and tag refs — so each list is authoritative and the
+    totals can be summed from them rather than stored beside them.
     """
-    releases: list[dict[str, Any]] = []
+    detail: dict[str, dict[str, list[dict[str, Any]]]] = {}
     cursor: str | None = None
 
     for _ in range(MAX_PAGES):
@@ -168,22 +199,28 @@ async def _releases_for(
                     await _repo_releases(graphql, name_with_owner, rel_page.get("endCursor"))
                 )
 
-            for node in nodes:
-                releases.append(await _build_release(graphql, name_with_owner, node))
+            detail[name_with_owner] = {
+                "releases": [
+                    await _build_release(graphql, name_with_owner, node) for node in nodes
+                ],
+                "branches": await _refs(
+                    graphql, name_with_owner, "refs/heads/", repo.get("branches") or {}
+                ),
+                "tags": await _refs(graphql, name_with_owner, "refs/tags/", repo.get("tags") or {}),
+            }
 
         repo_page = repos_conn.get("pageInfo") or {}
         if not repo_page.get("hasNextPage"):
             break
         cursor = repo_page.get("endCursor")
 
-    return releases
+    return detail
 
 
 def _rest_release(name_with_owner: str, release: dict[str, Any]) -> dict[str, Any]:
     """Map a REST release payload into the same shape the GraphQL walk produces."""
     assets = release.get("assets") or []
     return {
-        "repository": name_with_owner,
         "name": release.get("name") or release.get("tag_name"),
         "tag": release.get("tag_name"),
         "published_at": release.get("published_at"),
@@ -196,7 +233,7 @@ def _rest_release(name_with_owner: str, release: dict[str, Any]) -> dict[str, An
 
 async def async_fetch_releases_via_rest(
     pager: RestPager, repos: Sequence[str], concurrency: int
-) -> list[dict[str, Any]]:
+) -> RepoDetail:
     """Collect releases over REST, one paginated call per repository.
 
     The fallback for when GraphQL is unavailable — its budget is spent, or the token cannot
@@ -206,16 +243,21 @@ async def async_fetch_releases_via_rest(
     default path.
     """
 
-    async def _fetch(name_with_owner: str) -> list[dict[str, Any]]:
+    async def _fetch(name_with_owner: str) -> tuple[str, list[dict[str, Any]]]:
         items = await pager(f"/repos/{name_with_owner}/releases", None)
-        return [_rest_release(name_with_owner, r) for r in items if isinstance(r, dict)]
+        return name_with_owner, [
+            _rest_release(name_with_owner, r) for r in items if isinstance(r, dict)
+        ]
 
     results = await async_map_limited(list(repos), _fetch, concurrency)
 
-    releases: list[dict[str, Any]] = []
+    detail: RepoDetail = {}
     for result in results:
         if isinstance(result, BaseException):
             _LOGGER.debug("REST release listing failed: %s", result)
             continue
-        releases.extend(result)
-    return releases
+        name, releases = result
+        # Branches and tags are absent here: over REST each would be another request per
+        # repository, which is the cost this fallback exists to avoid.
+        detail[name] = {"releases": releases}
+    return detail

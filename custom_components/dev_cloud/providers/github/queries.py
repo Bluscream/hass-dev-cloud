@@ -20,6 +20,20 @@ from __future__ import annotations
 # Deliberately far below the per-connection maximum of 100; see the points budget above.
 GRAPHQL_PAGE_SIZE = 25
 GRAPHQL_NESTED_PAGE_SIZE = 10
+#: Branches and tags are cheap per item, but cost is charged on what a query *asks* for, not
+#: what exists — so a generous page would bill every repository for refs it does not have.
+#: Repositories with more than this are completed by a follow-up query, which is rare.
+GRAPHQL_REFS_PAGE_SIZE = 50
+
+REF_FIELDS = """
+  pageInfo { hasNextPage endCursor }
+  nodes { name target { oid } }
+"""
+
+REPO_REFS = f"""
+  branches: refs(refPrefix: "refs/heads/", first: {GRAPHQL_REFS_PAGE_SIZE}) {{ {REF_FIELDS} }}
+  tags: refs(refPrefix: "refs/tags/", first: {GRAPHQL_REFS_PAGE_SIZE}) {{ {REF_FIELDS} }}
+"""
 
 RELEASE_FIELDS = """
   id
@@ -50,6 +64,7 @@ query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
       pageInfo {{ hasNextPage endCursor }}
       nodes {{
         nameWithOwner
+        {REPO_REFS}
         releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
           pageInfo {{ hasNextPage endCursor }}
           nodes {{ {RELEASE_FIELDS} }}
@@ -79,6 +94,7 @@ query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
       pageInfo {{ hasNextPage endCursor }}
       nodes {{
         nameWithOwner
+        {REPO_REFS}
         releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
           pageInfo {{ hasNextPage endCursor }}
           nodes {{ {RELEASE_FIELDS} }}
@@ -109,4 +125,14 @@ query($id: ID!, $cursor: String, $size: Int!) {
     }
   }
 }
+"""
+
+REFS_QUERY = f"""
+query($owner: String!, $name: String!, $prefix: String!, $cursor: String) {{
+  repository(owner: $owner, name: $name) {{
+    refs(refPrefix: $prefix, first: {GRAPHQL_REFS_PAGE_SIZE}, after: $cursor) {{
+      {REF_FIELDS}
+    }}
+  }}
+}}
 """

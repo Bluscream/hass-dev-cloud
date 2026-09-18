@@ -74,6 +74,11 @@ class RepoData:
     # the account totals are summed from them.
     issues: list[dict[str, Any]] = field(default_factory=list)
     prs: list[dict[str, Any]] = field(default_factory=list)
+    # Releases carry their own assets, which carry their own download counts, so the whole
+    # chain hangs off the repository it belongs to rather than being flattened.
+    releases: list[dict[str, Any]] = field(default_factory=list)
+    branches: list[dict[str, Any]] = field(default_factory=list)
+    tags: list[dict[str, Any]] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -139,9 +144,6 @@ class DevCloudData:
     # has no CI or no token, which len(running_jobs) cannot distinguish from "none running".
     running_jobs_count: int | None = None
     running_jobs: list[dict[str, Any]] = field(default_factory=list)
-    # Each release carries its own `assets` list, so release, asset, and download totals are
-    # all derived from this one structure rather than stored alongside it.
-    releases: list[dict[str, Any]] = field(default_factory=list)
     # Totals the API reported for collections that were *not* enumerated, keyed by the field
     # they describe ("repos", "pastes", ...). Populated only when the matching list is absent,
     # so nothing here ever duplicates a len() a consumer could take itself.

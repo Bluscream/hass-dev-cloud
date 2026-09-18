@@ -28,6 +28,7 @@ from ..base import (
 from ..scheduling import QUOTA_GRAPHQL, PageWalker, ResourcePolicy
 from .queries import SPONSORS_QUERY
 from .releases import (
+    RepoDetail,
     async_fetch_all_releases,
     async_fetch_org_releases,
     async_fetch_releases_via_rest,
@@ -481,6 +482,17 @@ class GitHubProvider(BaseDevCloudProvider):
         return grouped
 
     @staticmethod
+    def _attach_detail(repos: list[RepoData], detail: RepoDetail) -> None:
+        """Hang each repository's releases, branches and tags off the repository itself."""
+        for repo in repos:
+            found = detail.get(repo.full_name)
+            if not found:
+                continue
+            repo.releases = found.get("releases", repo.releases)
+            repo.branches = found.get("branches", repo.branches)
+            repo.tags = found.get("tags", repo.tags)
+
+    @staticmethod
     def _attach_issues(
         repos: list[RepoData],
         issues: dict[str, list[dict[str, Any]]],
@@ -508,7 +520,7 @@ class GitHubProvider(BaseDevCloudProvider):
             (user.get("sponsorshipsAsSponsor") or {}).get("totalCount"),
         )
 
-    async def _async_releases(self) -> list[dict[str, Any]]:
+    async def _async_releases(self) -> RepoDetail:
         """Releases for the account's own repositories, over GraphQL where possible.
 
         GraphQL is tried first because it returns every release and asset in a handful of
@@ -580,13 +592,13 @@ class GitHubProvider(BaseDevCloudProvider):
             "sponsors", self._async_fetch_sponsors, (None, None)
         )
         sponsors_count, sponsoring_count = sponsors
-        releases: list[dict[str, Any]] = await self.async_resource(
-            "releases", self._async_releases, []
+        repo_detail: RepoDetail = await self.async_resource("releases", self._async_releases, {})
+        org_detail: RepoDetail = await self.async_resource(
+            "org_releases", lambda: async_fetch_org_releases(self._async_graphql, orgs), {}
         )
-        org_releases: list[dict[str, Any]] = await self.async_resource(
-            "org_releases", lambda: async_fetch_org_releases(self._async_graphql, orgs), []
-        )
-        releases = releases + org_releases
+        self._attach_detail(repos, repo_detail)
+        for org in orgs:
+            self._attach_detail(org.repos, org_detail)
         jobs: tuple[int | None, list[dict[str, Any]]] = await self.async_resource(
             "running_jobs", lambda: self._async_fetch_running_jobs(repos), (None, [])
         )
@@ -606,7 +618,6 @@ class GitHubProvider(BaseDevCloudProvider):
             sponsoring_count=sponsoring_count,
             running_jobs_count=running_jobs_count,
             running_jobs=running_jobs,
-            releases=releases,
             rate_limit_remaining=rest_budget.remaining,
             rate_limit_reset=int(reset_epoch) if reset_epoch is not None else None,
             scheduling=self.scheduler.diagnostics(),
