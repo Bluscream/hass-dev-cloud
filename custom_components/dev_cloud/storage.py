@@ -33,12 +33,34 @@ WWW_SUBDIR = "dev_cloud"
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^a-z0-9._-]+")
 
-# Counts that a consumer can derive by simply measuring a list already in this payload are
-# dropped — they are redundant and can only drift. Every other `*_count` field is kept
-# *because* its companion list is truncated by the upstream API (open_issues/open_prs cap at
-# 50 search hits, releases at 20 per repo, repos at 100) or has no list at all, so the count
-# carries information the list cannot. Re-check this set if a list ever becomes complete.
+# Every list in this payload is fetched to completion, so any count measuring one would be a
+# second copy of len(). Those counts were removed from the model outright; the only survivor
+# is running_jobs_count, which the model still needs because None ("no CI, or no token")
+# carries meaning that len(running_jobs) cannot express. It is dropped here instead.
+# sponsors_count/sponsoring_count stay in the payload: the API exposes no list for them.
 _REDUNDANT_COUNT_FIELDS = frozenset({"running_jobs_count"})
+
+# `/local` is served without authentication, so this file is readable by anyone who can
+# reach Home Assistant. No provider puts a credential in the snapshot today, but `extra`
+# dicts pass provider payloads through verbatim — one future field named `token` would be
+# enough. Any key matching this is replaced before the file is written.
+_SECRET_KEY_PATTERN = re.compile(
+    r"token|secret|password|passwd|api[_-]?key|credential|authorization|bearer|private[_-]?key",
+    re.IGNORECASE,
+)
+_REDACTED = "***redacted***"
+
+
+def _redact(value: Any) -> Any:
+    """Recursively replace values whose key looks like a credential."""
+    if isinstance(value, dict):
+        return {
+            k: (_REDACTED if _SECRET_KEY_PATTERN.search(str(k)) else _redact(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    return value
 
 
 def slugify_account(account: str) -> str:
@@ -59,7 +81,7 @@ def _build_json_path(hass: HomeAssistant, platform: str, account: str) -> str:
 
 def _serialize(platform: str, account: str, data: DevCloudData) -> dict[str, Any]:
     """Build the full JSON payload for one account snapshot."""
-    snapshot = {k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS}
+    snapshot = _redact({k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS})
     return {
         "platform": platform,
         "account": account,
