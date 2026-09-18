@@ -28,7 +28,10 @@ run_lint() {
     ruff check "$SRC_DIR"
     ruff format --check "$SRC_DIR"
   fi
-  python3 -m py_compile "$SRC_DIR"/*.py "$SRC_DIR"/providers/*.py
+  # find, not a glob: `providers/*.py` silently stopped covering the tree the moment a
+  # provider became a package, and a compile step that quietly checks less than it used to
+  # is worse than none.
+  find "$SRC_DIR" -name '*.py' -not -path '*/__pycache__/*' -exec python3 -m py_compile {} +
   echo "Lint and compile passed!"
 
   if [ -x "$VENV_DIR/bin/mypy" ]; then
@@ -64,7 +67,10 @@ run_format() {
 deploy_live() {
   echo "--> Deploying files to Home Assistant SMB share ($DEST_DIR)..."
   mkdir -p "$DEST_DIR"
-  cp -r "$SRC_DIR"/* "$DEST_DIR"/
+  # --delete because `cp -r` only ever adds: a module that has been renamed or split into a
+  # package would otherwise linger beside its replacement and shadow it on import.
+  # __pycache__ is excluded from deletion so Home Assistant's own bytecode is left alone.
+  rsync -a --delete --exclude='__pycache__' "$SRC_DIR"/ "$DEST_DIR"/
   echo "Files deployed!"
 }
 

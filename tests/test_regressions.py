@@ -12,7 +12,7 @@ import inspect
 from dev_cloud import sensor, storage
 from dev_cloud.providers import PROVIDER_REGISTRY
 from dev_cloud.providers.base import BaseDevCloudProvider
-from dev_cloud.providers.github_queries import (
+from dev_cloud.providers.github.queries import (
     GRAPHQL_NESTED_PAGE_SIZE,
     GRAPHQL_PAGE_SIZE,
 )
@@ -42,7 +42,7 @@ def test_graphql_query_is_affordable_in_points() -> None:
 def test_release_queries_ask_for_the_rate_limit_budget() -> None:
     """Without this the scheduler measures requests, which is the wrong currency for
     GraphQL and cannot see the budget draining."""
-    from dev_cloud.providers.github_queries import ORG_RELEASES_QUERY, USER_RELEASES_QUERY
+    from dev_cloud.providers.github.queries import ORG_RELEASES_QUERY, USER_RELEASES_QUERY
 
     for query in (USER_RELEASES_QUERY, ORG_RELEASES_QUERY):
         assert "rateLimit" in query

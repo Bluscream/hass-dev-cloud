@@ -14,9 +14,9 @@ from aiogithubapi import (
 )
 from aiohttp import ClientSession
 
-from ..const import PLATFORM_GITHUB, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
-from ..models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
-from .base import (
+from ...const import PLATFORM_GITHUB, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
+from ...models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
+from ..base import (
     MAX_PAGES,
     BaseDevCloudProvider,
     DevCloudAuthError,
@@ -25,13 +25,13 @@ from .base import (
     async_collect_running_jobs,
     async_map_limited,
 )
-from .github_queries import SPONSORS_QUERY
-from .github_releases import (
+from ..scheduling import QUOTA_GRAPHQL, PageWalker, ResourcePolicy
+from .queries import SPONSORS_QUERY
+from .releases import (
     async_fetch_all_releases,
     async_fetch_org_releases,
     async_fetch_releases_via_rest,
 )
-from .scheduling import QUOTA_GRAPHQL, PageWalker, ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
 

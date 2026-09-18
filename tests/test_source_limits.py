@@ -51,3 +51,17 @@ def test_no_function_exceeds_the_hard_limit() -> None:
                             f"- {length} lines")
 
     assert not over, "functions over the size limit:\n" + "\n".join(over)
+
+
+def test_every_source_file_is_reachable_from_the_package() -> None:
+    """A module inside a provider package must not be missed by tooling that globs one
+    directory deep — which is exactly what the build script's compile step used to do."""
+    nested = [p for p in _source_files() if p.parent != SOURCE_ROOT and p.name != "__init__.py"]
+    assert nested, "expected provider modules below the package root"
+
+    one_level_glob = set(SOURCE_ROOT.glob("*.py")) | set(SOURCE_ROOT.glob("providers/*.py"))
+    missed = [p for p in _source_files() if p not in one_level_glob]
+    assert missed, (
+        "this test guards a real gap; if nothing is missed the layout changed and the "
+        "build script's find-based compile step can be revisited"
+    )

@@ -16,10 +16,10 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-from ..const import RUNNING_JOBS_CONCURRENCY
-from ..models import OrgData
-from .base import MAX_PAGES, async_map_limited
-from .github_queries import (
+from ...const import RUNNING_JOBS_CONCURRENCY
+from ...models import OrgData
+from ..base import MAX_PAGES, async_map_limited
+from .queries import (
     ASSETS_QUERY,
     GRAPHQL_NESTED_PAGE_SIZE,
     GRAPHQL_PAGE_SIZE,
