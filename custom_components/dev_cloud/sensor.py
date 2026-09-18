@@ -45,6 +45,11 @@ async def async_setup_entry(
     if coordinator.platform_id in FORGE_PLATFORMS:
         entities.append(DevCloudNotificationsSensor(coordinator))
 
+    # Add Open Issues & Open Pull Requests sensors for forge platforms
+    if coordinator.platform_id in FORGE_PLATFORMS:
+        entities.append(DevCloudOpenIssuesSensor(coordinator))
+        entities.append(DevCloudOpenPullRequestsSensor(coordinator))
+
     # Add Packages sensor if platform has packages
     if coordinator.data and coordinator.data.packages:
         entities.append(DevCloudPackagesSensor(coordinator))
@@ -124,6 +129,7 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
         repos = self.coordinator.data.repos
         total_stars = sum(r.stars for r in repos)
         total_forks = sum(r.forks for r in repos)
+        total_watchers = sum(r.watchers for r in repos)
 
         repo_list = [
             {
@@ -133,6 +139,7 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
                 "description": r.description,
                 "stars": r.stars,
                 "forks": r.forks,
+                "watchers": r.watchers,
                 "is_fork": r.is_fork,
                 "is_private": r.is_private,
                 "language": r.primary_language,
@@ -146,6 +153,7 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
             "total_repositories": len(repos),
             "total_stars": total_stars,
             "total_forks": total_forks,
+            "total_watchers": total_watchers,
             "repositories": repo_list,
         }
 
@@ -310,4 +318,59 @@ class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
                 }
                 for n in notifications
             ],
+        }
+
+
+class DevCloudOpenIssuesSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for total open issues across repositories."""
+
+    _attr_icon = "mdi:alert-circle-outline"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "open_issues")
+        self._attr_name = "Open Issues"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        if self.coordinator.data.open_issues_count is not None:
+            return self.coordinator.data.open_issues_count
+        # Fallback to summing up open_issues in repos list
+        return sum(r.open_issues for r in self.coordinator.data.repos)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self.coordinator.data:
+            return {}
+        return {
+            "total_open_issues": self.native_value,
+            "issues": self.coordinator.data.open_issues,
+        }
+
+
+class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for total open pull requests across repositories."""
+
+    _attr_icon = "mdi:source-pull"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "open_prs")
+        self._attr_name = "Open Pull Requests"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.open_prs_count or 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self.coordinator.data:
+            return {}
+        return {
+            "total_open_prs": self.native_value,
+            "pull_requests": self.coordinator.data.open_prs,
         }

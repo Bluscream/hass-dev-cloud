@@ -121,6 +121,10 @@ class DevCloudData:
     pastes: list[PasteData] = field(default_factory=list)
     packages: list[PackageData] = field(default_factory=list)
     notifications: list[NotificationData] = field(default_factory=list)
+    open_issues_count: int | None = None
+    open_prs_count: int | None = None
+    open_issues: list[dict[str, Any]] = field(default_factory=list)
+    open_prs: list[dict[str, Any]] = field(default_factory=list)
     rate_limit_remaining: int | None = None
     rate_limit_reset: int | None = None
     raw_status: str = "ok"

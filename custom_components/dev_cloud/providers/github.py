@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from typing import Any
 
 from ..const import PLATFORM_GITHUB
 from ..models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
@@ -164,12 +165,74 @@ class GitHubProvider(BaseDevCloudProvider):
                     "Error fetching GitHub notifications for %s: %s", self.account_name, err
                 )
 
+        # 6. Fetch Open Issues & PRs across user repos and orgs
+        open_issues_count: int | None = None
+        open_prs_count: int | None = None
+        open_issues: list[dict[str, Any]] = []
+        open_prs: list[dict[str, Any]] = []
+
+        try:
+            # Open Issues in repos owned by user
+            issues_search_url = (
+                f"{self.base_url}/search/issues"
+                f"?q=user:{self.account_name}+type:issue+state:open&per_page=50&sort=updated"
+            )
+            issues_json, _ = await self.async_get_json(issues_search_url)
+            if isinstance(issues_json, dict) and "total_count" in issues_json:
+                open_issues_count = issues_json.get("total_count", 0)
+                for item in issues_json.get("items", []):
+                    open_issues.append(
+                        {
+                            "id": item.get("id"),
+                            "number": item.get("number"),
+                            "title": item.get("title"),
+                            "url": item.get("html_url"),
+                            "repository": item.get("repository_url", "").split("/")[-1],
+                            "author": item.get("user", {}).get("login"),
+                            "comments": item.get("comments", 0),
+                            "created_at": item.get("created_at"),
+                            "updated_at": item.get("updated_at"),
+                        }
+                    )
+        except Exception as err:
+            _LOGGER.warning("Error fetching GitHub open issues for %s: %s", self.account_name, err)
+
+        try:
+            # Open Pull Requests in repos owned by user
+            prs_search_url = (
+                f"{self.base_url}/search/issues"
+                f"?q=user:{self.account_name}+type:pr+state:open&per_page=50&sort=updated"
+            )
+            prs_json, _ = await self.async_get_json(prs_search_url)
+            if isinstance(prs_json, dict) and "total_count" in prs_json:
+                open_prs_count = prs_json.get("total_count", 0)
+                for item in prs_json.get("items", []):
+                    open_prs.append(
+                        {
+                            "id": item.get("id"),
+                            "number": item.get("number"),
+                            "title": item.get("title"),
+                            "url": item.get("html_url"),
+                            "repository": item.get("repository_url", "").split("/")[-1],
+                            "author": item.get("user", {}).get("login"),
+                            "comments": item.get("comments", 0),
+                            "created_at": item.get("created_at"),
+                            "updated_at": item.get("updated_at"),
+                        }
+                    )
+        except Exception as err:
+            _LOGGER.warning("Error fetching GitHub open PRs for %s: %s", self.account_name, err)
+
         return DevCloudData(
             profile=profile,
             orgs=orgs,
             repos=repos,
             pastes=pastes,
             notifications=notifications,
+            open_issues_count=open_issues_count,
+            open_prs_count=open_prs_count,
+            open_issues=open_issues,
+            open_prs=open_prs,
             rate_limit_remaining=rate_limit_remaining,
             rate_limit_reset=rate_limit_reset,
         )
