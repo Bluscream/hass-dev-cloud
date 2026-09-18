@@ -6,7 +6,7 @@ import contextlib
 import logging
 
 from ..const import PLATFORM_GITHUB
-from ..models import DevCloudData, OrgData, PasteData, ProfileData, RepoData
+from ..models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
 from .base import BaseDevCloudProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -137,11 +137,39 @@ class GitHubProvider(BaseDevCloudProvider):
         except Exception as err:
             _LOGGER.warning("Error fetching GitHub gists for %s: %s", self.account_name, err)
 
+        # 5. Fetch notifications (if authenticated)
+        notifications: list[NotificationData] = []
+        if self.api_token:
+            try:
+                notif_url = f"{self.base_url}/notifications?per_page=100"
+                notif_json, _ = await self.async_get_json(notif_url)
+                if isinstance(notif_json, list):
+                    for n in notif_json:
+                        subject = n.get("subject", {})
+                        repo = n.get("repository", {})
+                        notifications.append(
+                            NotificationData(
+                                notification_id=str(n.get("id", "")),
+                                title=subject.get("title", "Notification"),
+                                reason=n.get("reason"),
+                                repository=repo.get("full_name"),
+                                url=subject.get("html_url") or repo.get("html_url"),
+                                unread=bool(n.get("unread", True)),
+                                updated_at=n.get("updated_at"),
+                                subject_type=subject.get("type"),
+                            )
+                        )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Error fetching GitHub notifications for %s: %s", self.account_name, err
+                )
+
         return DevCloudData(
             profile=profile,
             orgs=orgs,
             repos=repos,
             pastes=pastes,
+            notifications=notifications,
             rate_limit_remaining=rate_limit_remaining,
             rate_limit_reset=rate_limit_reset,
         )

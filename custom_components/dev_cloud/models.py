@@ -97,6 +97,21 @@ class PackageData:
 
 
 @dataclass(slots=True)
+class NotificationData:
+    """Unread or active notification item."""
+
+    notification_id: str
+    title: str
+    reason: str | None = None
+    repository: str | None = None
+    url: str | None = None
+    unread: bool = True
+    updated_at: str | None = None
+    subject_type: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class DevCloudData:
     """Aggregated snapshot of all monitored items for one account."""
 
@@ -105,6 +120,7 @@ class DevCloudData:
     repos: list[RepoData] = field(default_factory=list)
     pastes: list[PasteData] = field(default_factory=list)
     packages: list[PackageData] = field(default_factory=list)
+    notifications: list[NotificationData] = field(default_factory=list)
     rate_limit_remaining: int | None = None
     rate_limit_reset: int | None = None
     raw_status: str = "ok"

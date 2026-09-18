@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from ..const import PLATFORM_GITEA
-from ..models import DevCloudData, OrgData, ProfileData, RepoData
+from ..models import DevCloudData, NotificationData, OrgData, ProfileData, RepoData
 from .base import BaseDevCloudProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -102,10 +102,37 @@ class GiteaProvider(BaseDevCloudProvider):
         except Exception as err:
             _LOGGER.warning("Error fetching Gitea orgs for %s: %s", self.account_name, err)
 
+        # 4. Fetch notifications (if authenticated)
+        notifications: list[NotificationData] = []
+        if self.api_token:
+            try:
+                notif_url = f"{self.base_url}/api/v1/notifications?limit=100"
+                notif_json, _ = await self.async_get_json(notif_url)
+                if isinstance(notif_json, list):
+                    for n in notif_json:
+                        subject = n.get("subject", {})
+                        repo = n.get("repository", {})
+                        notifications.append(
+                            NotificationData(
+                                notification_id=str(n.get("id", "")),
+                                title=subject.get("title", "Notification"),
+                                repository=repo.get("full_name"),
+                                url=subject.get("url") or repo.get("html_url"),
+                                unread=bool(n.get("unread", True)),
+                                updated_at=n.get("updated_at"),
+                                subject_type=subject.get("type"),
+                            )
+                        )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Error fetching Gitea notifications for %s: %s", self.account_name, err
+                )
+
         profile.public_repos = len(repos)
 
         return DevCloudData(
             profile=profile,
             orgs=orgs,
             repos=repos,
+            notifications=notifications,
         )

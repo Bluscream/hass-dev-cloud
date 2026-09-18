@@ -6,7 +6,7 @@ import contextlib
 import logging
 
 from ..const import PLATFORM_GITLAB
-from ..models import DevCloudData, OrgData, PasteData, ProfileData, RepoData
+from ..models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
 from .base import BaseDevCloudProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -146,6 +146,31 @@ class GitLabProvider(BaseDevCloudProvider):
             except Exception as err:
                 _LOGGER.warning("Error fetching GitLab groups for %s: %s", self.account_name, err)
 
+        # 6. Fetch user notifications/todos if authenticated
+        notifications: list[NotificationData] = []
+        if self.api_token:
+            try:
+                todos_url = f"{self.base_url}/api/v4/todos?state=pending&per_page=100"
+                todos_json, _ = await self.async_get_json(todos_url)
+                if isinstance(todos_json, list):
+                    for t in todos_json:
+                        project = t.get("project", {})
+                        target = t.get("target", {})
+                        notifications.append(
+                            NotificationData(
+                                notification_id=str(t.get("id", "")),
+                                title=target.get("title") or t.get("action_name", "Todo"),
+                                reason=t.get("action_name"),
+                                repository=project.get("path_with_namespace"),
+                                url=t.get("target_url"),
+                                unread=t.get("state") == "pending",
+                                updated_at=t.get("updated_at") or t.get("created_at"),
+                                subject_type=t.get("target_type"),
+                            )
+                        )
+            except Exception as err:
+                _LOGGER.warning("Error fetching GitLab todos for %s: %s", self.account_name, err)
+
         profile.public_repos = len(repos)
         profile.public_gists = len(pastes)
 
@@ -154,5 +179,6 @@ class GitLabProvider(BaseDevCloudProvider):
             orgs=orgs,
             repos=repos,
             pastes=pastes,
+            notifications=notifications,
             rate_limit_remaining=rate_limit_remaining,
         )

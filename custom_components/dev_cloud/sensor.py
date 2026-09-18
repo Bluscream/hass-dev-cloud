@@ -41,6 +41,10 @@ async def async_setup_entry(
     if has_pastes or coordinator.platform_id in ("github", "gitlab"):
         entities.append(DevCloudPastesSensor(coordinator))
 
+    # Add Notifications sensor if platform supports or has notifications
+    if coordinator.platform_id in FORGE_PLATFORMS:
+        entities.append(DevCloudNotificationsSensor(coordinator))
+
     # Add Packages sensor if platform has packages
     if coordinator.data and coordinator.data.packages:
         entities.append(DevCloudPackagesSensor(coordinator))
@@ -266,3 +270,44 @@ class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
             attrs["total_pulls"] = total_pulls
 
         return attrs
+
+
+class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
+    """Notifications sensor with unread count as state and notifications map in attributes."""
+
+    _attr_icon = "mdi:bell"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "notifications")
+        self._attr_name = "Notifications"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return sum(1 for n in self.coordinator.data.notifications if n.unread)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self.coordinator.data:
+            return {}
+        notifications = self.coordinator.data.notifications
+        unread_count = sum(1 for n in notifications if n.unread)
+        return {
+            "total_notifications": len(notifications),
+            "unread_notifications": unread_count,
+            "notifications": [
+                {
+                    "id": n.notification_id,
+                    "title": n.title,
+                    "reason": n.reason,
+                    "repository": n.repository,
+                    "url": n.url,
+                    "unread": n.unread,
+                    "subject_type": n.subject_type,
+                    "updated_at": n.updated_at,
+                }
+                for n in notifications
+            ],
+        }
