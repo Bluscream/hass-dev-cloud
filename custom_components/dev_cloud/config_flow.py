@@ -68,11 +68,14 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._selected_platform: str | None = None
+        self._selected_instance_url: str | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: Choose platform."""
         if user_input is not None:
             self._selected_platform = user_input[CONF_PLATFORM]
+            if self._selected_platform == PLATFORM_GITEA:
+                return await self.async_step_gitea_instance()
             return await self.async_step_account()
 
         options = [SelectOptionDict(value=k, label=v) for k, v in SUPPORTED_PLATFORMS.items()]
@@ -89,28 +92,84 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="user", data_schema=schema)
 
+    async def async_step_gitea_instance(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2 (Gitea only): Choose preset, existing configured instance, or custom instance."""
+        if user_input is not None:
+            preset = user_input.get(CONF_INSTANCE_PRESET, "codeberg")
+            if preset == INSTANCE_CUSTOM:
+                self._selected_instance_url = None
+            elif preset.startswith("existing_"):
+                # Value stored in custom option
+                url = preset[len("existing_") :]
+                self._selected_instance_url = url
+            else:
+                self._selected_instance_url = GITEA_PRESETS.get(preset, {}).get("url", "")
+            return await self.async_step_account()
+
+        preset_options: list[SelectOptionDict] = []
+
+        # 1. Existing configured Gitea / Forgejo instances
+        configured_urls: set[str] = set()
+        for entry in self._async_current_entries():
+            if entry.data.get(CONF_PLATFORM) == PLATFORM_GITEA:
+                url = (entry.data.get(CONF_INSTANCE_URL) or "").rstrip("/")
+                if url and url not in configured_urls:
+                    configured_urls.add(url)
+                    netloc = urllib.parse.urlparse(url).netloc
+                    preset_options.append(
+                        SelectOptionDict(
+                            value=f"existing_{url}",
+                            label=f"{netloc} (Configured)",
+                        )
+                    )
+
+        # 2. Predefined public instances
+        for k, v in GITEA_PRESETS.items():
+            if k == INSTANCE_CUSTOM:
+                continue
+            preset_options.append(SelectOptionDict(value=k, label=v["name"]))
+
+        # 3. Custom Instance option
+        preset_options.append(
+            SelectOptionDict(value=INSTANCE_CUSTOM, label=GITEA_PRESETS[INSTANCE_CUSTOM]["name"])
+        )
+
+        default_preset = preset_options[0]["value"]
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_INSTANCE_PRESET, default=default_preset): SelectSelector(
+                    SelectSelectorConfig(
+                        options=preset_options,
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="gitea_instance", data_schema=schema)
+
     async def async_step_account(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 2: Enter account details & optional credentials/URL."""
+        """Step 2/3: Enter account details & optional credentials/URL."""
         errors: dict[str, str] = {}
         platform = self._selected_platform or PLATFORM_GITHUB
         is_gitea = platform == PLATFORM_GITEA
-        supports_custom_url = platform in (PLATFORM_GITLAB, PLATFORM_GITEA)
+        is_custom_gitea = is_gitea and not self._selected_instance_url
+        supports_custom_url = (platform == PLATFORM_GITLAB) or is_custom_gitea
 
         if user_input is not None:
             account = user_input[CONF_ACCOUNT_NAME].strip()
 
             # Determine instance URL
-            instance_url = ""
             if is_gitea:
-                preset = user_input.get(CONF_INSTANCE_PRESET, "codeberg")
-                if preset == INSTANCE_CUSTOM:
+                if is_custom_gitea:
                     instance_url = (user_input.get(CONF_INSTANCE_URL) or "").strip()
                     if not instance_url:
                         errors[CONF_INSTANCE_URL] = "invalid_url"
                 else:
-                    instance_url = GITEA_PRESETS.get(preset, {}).get("url", "")
+                    instance_url = self._selected_instance_url or ""
             else:
                 instance_url = user_input.get(CONF_INSTANCE_URL) or DEFAULT_URLS.get(platform, "")
 
@@ -178,35 +237,27 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
         }
 
-        if is_gitea:
-            preset_options = [
-                SelectOptionDict(value=k, label=v["name"]) for k, v in GITEA_PRESETS.items()
-            ]
-            fields[vol.Required(CONF_INSTANCE_PRESET, default="codeberg")] = SelectSelector(
-                SelectSelectorConfig(
-                    options=preset_options,
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
-            )
-            # Optional custom URL if "Custom Instance..." is selected
-            fields[vol.Optional(CONF_INSTANCE_URL, default="")] = TextSelector(
-                TextSelectorConfig(type=TextSelectorType.URL)
-            )
-        elif supports_custom_url:
-            default_url = DEFAULT_URLS.get(platform, "")
-            fields[vol.Optional(CONF_INSTANCE_URL, default=default_url)] = TextSelector(
-                TextSelectorConfig(type=TextSelectorType.URL)
-            )
+        if supports_custom_url:
+            default_url = DEFAULT_URLS.get(platform, "") if not is_gitea else ""
+            url_selector = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+            if is_custom_gitea:
+                fields[vol.Required(CONF_INSTANCE_URL)] = url_selector
+            else:
+                fields[vol.Optional(CONF_INSTANCE_URL, default=default_url)] = url_selector
 
         fields[vol.Optional(CONF_API_TOKEN)] = TextSelector(
             TextSelectorConfig(type=TextSelectorType.PASSWORD)
         )
 
+        placeholders: dict[str, str] = {"platform": SUPPORTED_PLATFORMS.get(platform, platform)}
+        if is_gitea and self._selected_instance_url:
+            placeholders["instance"] = urllib.parse.urlparse(self._selected_instance_url).netloc
+
         return self.async_show_form(
             step_id="account",
             data_schema=vol.Schema(fields),
             errors=errors,
-            description_placeholders={"platform": SUPPORTED_PLATFORMS.get(platform, platform)},
+            description_placeholders=placeholders,
         )
 
     @staticmethod

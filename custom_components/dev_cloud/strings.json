@@ -8,13 +8,19 @@
           "platform": "Platform"
         }
       },
+      "gitea_instance": {
+        "title": "Select Gitea / Forgejo Instance",
+        "description": "Choose a public preset instance, an instance already configured in Home Assistant, or specify a custom instance URL.",
+        "data": {
+          "instance_preset": "Instance"
+        }
+      },
       "account": {
         "title": "Configure {platform} Account",
         "description": "Enter your account username/handle. Providing a personal access token is recommended to avoid rate limits.",
         "data": {
           "account_name": "Account / Username",
-          "instance_preset": "Gitea / Forgejo Instance",
-          "instance_url": "Instance Base URL (if custom)",
+          "instance_url": "Instance Base URL",
           "api_token": "API Token / Personal Access Token (Optional)"
         }
       }
