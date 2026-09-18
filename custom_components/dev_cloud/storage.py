@@ -22,7 +22,7 @@ import tempfile
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from homeassistant.core import HomeAssistant
 from yarl import URL
@@ -57,7 +57,7 @@ _REDACTED = "***redacted***"
 
 # Values carrying no information. `0` and `False` are deliberately absent: a zero download
 # count or `is_fork: false` is an answer, not a missing one.
-_EMPTY = (None, "", [], {})
+_EMPTY: Final[tuple[object, ...]] = (None, "", [], {})
 
 
 def _prune(value: Any) -> Any:
