@@ -27,6 +27,28 @@ def test_graphql_node_budget_is_not_exceeded() -> None:
     assert repos_x_releases_x_assets <= GITHUB_MAX_NODES
 
 
+def test_graphql_query_is_affordable_in_points() -> None:
+    """Validity is not the binding constraint: GitHub bills ~1 point per 100 requested
+    nodes against a 5000/hour budget. At 100x50x50 a single query cost ~2551 points, so two
+    exhausted the hour and the releases fetch died with "API rate limit exceeded"."""
+    repos, nested = GRAPHQL_PAGE_SIZE, GRAPHQL_NESTED_PAGE_SIZE
+    nodes = repos + repos * nested + repos * nested * nested
+    points = nodes / 100
+
+    # Must stay affordable enough to walk the account plus ~45 organisations in one hour.
+    assert points <= 50, f"query costs ~{points:.0f} points; 46 walks would need {points*46:.0f}"
+
+
+def test_release_queries_ask_for_the_rate_limit_budget() -> None:
+    """Without this the scheduler measures requests, which is the wrong currency for
+    GraphQL and cannot see the budget draining."""
+    from dev_cloud.providers.github_queries import ORG_RELEASES_QUERY, USER_RELEASES_QUERY
+
+    for query in (USER_RELEASES_QUERY, ORG_RELEASES_QUERY):
+        assert "rateLimit" in query
+        assert "remaining" in query and "resetAt" in query
+
+
 def test_json_url_lives_only_on_the_profile_sensor() -> None:
     """It was inherited by every entity, repeating one URL across all of them."""
     carriers = [

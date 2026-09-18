@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from datetime import datetime
 from typing import Any, ClassVar
 
 from aiogithubapi import (
@@ -189,7 +190,31 @@ class GitHubProvider(BaseDevCloudProvider):
         resp = await self._api.graphql(query=query, variables=variables)
         self._observe_rate_limit(resp)
         payload = resp.data or {}
-        return payload.get("data") or payload or {}
+        data: dict[str, Any] = payload.get("data") or payload or {}
+        self._observe_graphql_budget(data)
+        return data
+
+    def _observe_graphql_budget(self, data: dict[str, Any]) -> None:
+        """Feed GitHub's GraphQL budget to the scheduler.
+
+        GraphQL is billed in points rather than requests, on a separate 5000/hour budget
+        from REST. Queries that ask for a deep tree cost hundreds of points each, so the
+        request counter the scheduler measures is the wrong currency entirely — without
+        this, a poll can exhaust the budget while appearing to have made 16 requests.
+        """
+        limit = data.get("rateLimit")
+        if not isinstance(limit, dict):
+            return
+
+        remaining = limit.get("remaining")
+        reset_at = limit.get("resetAt")
+        reset_epoch: float | None = None
+        if isinstance(reset_at, str):
+            with contextlib.suppress(ValueError):
+                reset_epoch = datetime.fromisoformat(reset_at).timestamp()
+
+        if isinstance(remaining, int):
+            self.scheduler.observe_rate_limit(remaining, reset_epoch)
 
     async def _async_fetch_running_jobs(
         self, repos: list[RepoData]
