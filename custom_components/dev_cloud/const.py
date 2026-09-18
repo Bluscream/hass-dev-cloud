@@ -52,7 +52,7 @@ INSTANCE_CUSTOM: Final = "custom"
 GITEA_PRESETS: Final = {
     "codeberg": {"name": "Codeberg (Forgejo - codeberg.org)", "url": "https://codeberg.org"},
     "gitea_com": {"name": "Gitea.com (gitea.com)", "url": "https://gitea.com"},
-    "opendev": {"name": "OpenDev (opendev.org)", "url": "https://opendev.org"},
+    "disroot": {"name": "Disroot (git.disroot.org)", "url": "https://git.disroot.org"},
     INSTANCE_CUSTOM: {"name": "Custom Instance...", "url": ""},
 }
 
