@@ -227,3 +227,50 @@ def test_issue_total_is_zero_when_collected_and_empty() -> None:
 
     assert aggregation.counted_issues(coordinator) == 0
     assert aggregation.counted_prs(coordinator) == 0
+
+
+def test_totals_are_computed_in_a_single_pass() -> None:
+    """Sensor properties are read far more often than the data changes, so every aggregate
+    comes from one walk per update rather than one walk per property access."""
+    coordinator = _coordinator(include=False)
+    totals = aggregation.compute_totals(coordinator)
+
+    assert totals.repositories == 1
+    assert totals.counted_repositories == 2  # own + the owned org
+    assert totals.stars == 691
+    assert totals.releases == 2
+    assert totals.downloads == 150
+
+
+def test_totals_honour_the_organisation_option() -> None:
+    included = aggregation.compute_totals(_coordinator(include=True))
+    excluded = aggregation.compute_totals(_coordinator(include=False))
+
+    assert included.stars == 51690
+    assert excluded.stars == 691
+    assert included.releases > excluded.releases
+
+
+def test_every_total_the_sensors_read_exists_on_the_dataclass() -> None:
+    """A typo in a sensor's field name would otherwise surface as an AttributeError at
+    runtime, on a property Home Assistant calls constantly."""
+    import ast
+    import dataclasses
+    from pathlib import Path
+
+    from dev_cloud import sensor
+
+    names = {f.name for f in dataclasses.fields(aggregation.Totals)}
+    tree = ast.parse(Path(sensor.__file__).read_text(encoding="utf-8"))
+
+    requested = {
+        node.args[1].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_total"
+        and len(node.args) == 2
+        and isinstance(node.args[1], ast.Constant)
+    }
+    assert requested, "expected sensors to read totals"
+    assert requested <= names, f"unknown totals: {requested - names}"

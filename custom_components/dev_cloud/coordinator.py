@@ -11,6 +11,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from yarl import URL
 
+from .aggregation import Totals, compute_totals
 from .const import (
     CONF_ACCOUNT_NAME,
     CONF_API_TOKEN,
@@ -82,6 +83,10 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         # Restored from the published snapshot on the first poll, so a reload resumes the
         # previous schedule rather than treating every resource as due.
         self._restored = False
+
+        # Recomputed once per successful update; sensors read it instead of walking every
+        # repository on each property access.
+        self.totals: Totals | None = None
 
         self._previous_repos: set[str] = set()
         self._previous_packages: set[str] = set()
@@ -155,6 +160,11 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
 
         self._previous_repos = current_repos
         self._previous_packages = current_pkgs
+
+        # Set before returning, so a sensor read triggered by the update already sees
+        # totals matching the data it is reading.
+        self.data = data
+        self.totals = compute_totals(self)
 
         # Export the complete snapshot to /config/www so sensors only need to carry counts.
         await async_dump_dev_cloud_json(self.hass, self.platform_id, self.account_name, data)

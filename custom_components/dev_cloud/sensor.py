@@ -26,12 +26,8 @@ from homeassistant.helpers.typing import StateType
 
 from . import DevCloudConfigEntry
 from .aggregation import (
-    assets,
     collection_total,
     counted_issues,
-    counted_prs,
-    counted_releases,
-    counted_repos,
 )
 from .const import PLATFORM_ICONS
 from .coordinator import DevCloudCoordinator
@@ -128,24 +124,25 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return collection_total(self.coordinator, "repos")
+        return _total(self.coordinator, "repositories")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        repos = self.coordinator.data.repos
-        counted = counted_repos(self.coordinator)
+        totals = self.coordinator.totals
+        if totals is None:
+            return {}
         attrs = {
-            "total_repositories": self.native_value,
-            "public_repositories": sum(1 for r in repos if not r.is_private),
-            "private_repositories": sum(1 for r in repos if r.is_private),
+            "total_repositories": totals.repositories,
+            "public_repositories": totals.public_repositories,
+            "private_repositories": totals.private_repositories,
             # Totals span the organisation repositories that count for this entry, so they
             # can exceed total_repositories, which is the account's own repos alone.
-            "counted_repositories": len(counted),
-            "total_stars": sum(r.stars for r in counted),
-            "total_forks": sum(r.forks for r in counted),
-            "total_watchers": sum(r.watchers for r in counted),
+            "counted_repositories": totals.counted_repositories,
+            "total_stars": totals.stars,
+            "total_forks": totals.forks,
+            "total_watchers": totals.watchers,
         }
         return {k: v for k, v in attrs.items() if v is not None}
 
@@ -205,7 +202,7 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return collection_total(self.coordinator, "pastes")
+        return _total(self.coordinator, "pastes")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -236,7 +233,7 @@ class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return len(self.coordinator.data.packages)
+        return _total(self.coordinator, "packages")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -300,7 +297,7 @@ class DevCloudOpenIssuesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return counted_issues(self.coordinator)
+        return _total(self.coordinator, "issues")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -325,7 +322,7 @@ class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return counted_prs(self.coordinator)
+        return _total(self.coordinator, "prs")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -350,11 +347,7 @@ class DevCloudStarsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        data = self.coordinator.data
-        # Registries expose stars on the package rather than on a repository.
-        return sum(r.stars for r in counted_repos(self.coordinator)) + sum(
-            p.star_count or 0 for p in data.packages
-        )
+        return _total(self.coordinator, "stars")
 
 
 class DevCloudWatchersSensor(DevCloudBaseEntity, SensorEntity):
@@ -373,7 +366,7 @@ class DevCloudWatchersSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(r.watchers for r in counted_repos(self.coordinator))
+        return _total(self.coordinator, "watchers")
 
 
 class DevCloudForksSensor(DevCloudBaseEntity, SensorEntity):
@@ -392,7 +385,7 @@ class DevCloudForksSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(r.forks for r in counted_repos(self.coordinator))
+        return _total(self.coordinator, "forks")
 
 
 class DevCloudPullsSensor(DevCloudBaseEntity, SensorEntity):
@@ -412,7 +405,7 @@ class DevCloudPullsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(p.pull_count or 0 for p in self.coordinator.data.packages)
+        return _total(self.coordinator, "package_pulls")
 
 
 class DevCloudReleasesSensor(DevCloudBaseEntity, SensorEntity):
@@ -431,7 +424,7 @@ class DevCloudReleasesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return len(counted_releases(self.coordinator))
+        return _total(self.coordinator, "releases")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -456,7 +449,7 @@ class DevCloudReleaseAssetsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(len(assets(release)) for release in counted_releases(self.coordinator))
+        return _total(self.coordinator, "assets")
 
 
 class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
@@ -478,11 +471,7 @@ class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(
-            int(asset.get("downloads", 0) or 0)
-            for release in counted_releases(self.coordinator)
-            for asset in assets(release)
-        )
+        return _total(self.coordinator, "downloads")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -545,6 +534,15 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
             "platform": self.coordinator.platform_id,
             "account": self.coordinator.account_name,
         }
+
+
+def _total(coordinator: DevCloudCoordinator, field: str) -> StateType:
+    """Read one precomputed aggregate.
+
+    None before the first update completes, which Home Assistant renders as unknown.
+    """
+    totals = coordinator.totals
+    return getattr(totals, field) if totals is not None else None
 
 
 def _collected(coordinator: DevCloudCoordinator, *resources: str) -> bool:
