@@ -35,8 +35,8 @@ class DevCloudBaseEntity(CoordinatorEntity[DevCloudCoordinator]):
         if platform_id == PLATFORM_GITEA and instance_url:
             netloc = urllib.parse.urlparse(instance_url).netloc.split(":")[0]
             domain_slug = netloc.replace(".", "_").replace("-", "_").strip("_").lower()
-            device_name = f"{domain_slug} {account_name}"
-            manufacturer = domain_slug
+            device_name = f"{netloc} ({account_name})"
+            manufacturer = "Gitea"
             self._attr_suggested_object_id = f"{domain_slug}_{account_name.lower()}_{entity_key}"
         else:
             platform_name = SUPPORTED_PLATFORMS.get(platform_id, platform_id.title())
