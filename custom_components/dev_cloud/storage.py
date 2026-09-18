@@ -66,6 +66,10 @@ def _prune(value: Any) -> Any:
     Roughly 5% of a snapshot was nulls and empty lists repeated across every item. Consumers
     read a missing key exactly as they read an empty one, so use `.get(key, default)`.
     """
+    if isinstance(value, set | frozenset):
+        # Sets are used in-process for membership; JSON has no such type, and sorting keeps
+        # the file stable between writes instead of reordering on every dump.
+        return sorted(str(item) for item in value)
     if isinstance(value, dict):
         pruned = {k: _prune(v) for k, v in value.items()}
         return {k: v for k, v in pruned.items() if v not in _EMPTY}

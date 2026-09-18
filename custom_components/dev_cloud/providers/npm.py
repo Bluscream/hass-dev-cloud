@@ -121,4 +121,5 @@ class NPMProvider(BaseDevCloudProvider):
             orgs=orgs,
             scheduling=self.scheduler.diagnostics(),
             resources=self.scheduler.persisted_state(),
+            collected=self.collected_resources(),
         )

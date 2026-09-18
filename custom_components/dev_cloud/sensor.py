@@ -544,8 +544,19 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
         }
 
 
-#: Sensor classes paired with the test for whether this account has data behind them.
-#: Evaluated once at platform setup, so a sensor that gains data later appears on reload.
+def _collected(coordinator: DevCloudCoordinator, *resources: str) -> bool:
+    """Whether the data behind a sensor was gathered at all.
+
+    The test is "did we collect this", never "is it non-empty". Zero unread notifications,
+    zero open pull requests and zero stars are all readings a dashboard wants; a platform
+    that has no notion of them at all is what should produce no sensor.
+    """
+    return any(resource in coordinator.data.collected for resource in resources)
+
+
+#: Sensor classes paired with the test for whether this account has the data behind them.
+#: Evaluated once at platform setup, so a sensor whose resource starts being collected
+#: appears on the next reload.
 _OPTIONAL_SENSORS: tuple[
     tuple[
         Callable[[DevCloudCoordinator], SensorEntity],
@@ -554,27 +565,24 @@ _OPTIONAL_SENSORS: tuple[
     ...,
 ] = (
     (DevCloudRepositoriesSensor, lambda c: collection_total(c, "repos") is not None),
-    (DevCloudOrganizationsSensor, lambda c: bool(c.data.orgs)),
+    (DevCloudOrganizationsSensor, lambda c: _collected(c, "orgs")),
     (DevCloudPastesSensor, lambda c: collection_total(c, "pastes") is not None),
-    (DevCloudNotificationsSensor, lambda c: bool(c.data.notifications)),
+    (DevCloudNotificationsSensor, lambda c: _collected(c, "notifications")),
     (DevCloudOpenIssuesSensor, lambda c: counted_issues(c) is not None),
-    (DevCloudOpenPullRequestsSensor, lambda c: counted_prs(c) is not None),
-    (
-        DevCloudStarsSensor,
-        lambda c: (
-            any(r.stars for r in counted_repos(c)) or any(p.star_count for p in c.data.packages)
-        ),
-    ),
-    (DevCloudWatchersSensor, lambda c: any(r.watchers for r in counted_repos(c))),
-    (DevCloudForksSensor, lambda c: any(r.forks for r in counted_repos(c))),
-    (DevCloudReleasesSensor, lambda c: bool(counted_releases(c))),
-    (DevCloudReleaseAssetsSensor, lambda c: bool(counted_releases(c))),
-    (DevCloudDownloadsSensor, lambda c: bool(counted_releases(c))),
+    (DevCloudOpenPullRequestsSensor, lambda c: _collected(c, "prs")),
+    # Stars, forks and watchers come off the repositories, so collecting those is what
+    # makes them answerable — a repository with no stars still has an answer.
+    (DevCloudStarsSensor, lambda c: _collected(c, "repos", "packages")),
+    (DevCloudWatchersSensor, lambda c: _collected(c, "repos")),
+    (DevCloudForksSensor, lambda c: _collected(c, "repos")),
+    (DevCloudReleasesSensor, lambda c: _collected(c, "releases")),
+    (DevCloudReleaseAssetsSensor, lambda c: _collected(c, "releases")),
+    (DevCloudDownloadsSensor, lambda c: _collected(c, "releases")),
     (DevCloudPullsSensor, lambda c: any(p.pull_count for p in c.data.packages)),
     (
         DevCloudSponsorsSensor,
         lambda c: c.data.sponsors_count is not None or c.data.sponsoring_count is not None,
     ),
-    (DevCloudPackagesSensor, lambda c: bool(c.data.packages)),
+    (DevCloudPackagesSensor, lambda c: _collected(c, "packages")),
     (DevCloudRunningJobsSensor, lambda c: c.data.running_jobs_count is not None),
 )

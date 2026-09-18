@@ -218,3 +218,68 @@ def test_docker_hub_does_not_emit_images_as_both_packages_and_repos() -> None:
 
     source = inspect.getsource(DockerHubProvider)
     assert "RepoData" not in source, "Docker Hub images are packages, not repositories"
+
+
+def test_collected_is_derived_from_what_was_fetched_not_declared() -> None:
+    """Providers do not announce capabilities: the set is whatever actually returned."""
+    import asyncio
+
+    import aiohttp
+
+    from dev_cloud.providers import get_provider
+
+    async def check() -> None:
+        async with aiohttp.ClientSession() as session:
+            provider = get_provider("github", session=session, account_name="x")
+            assert provider.collected_resources() == set()
+
+            provider._resource_values["notifications"] = []
+            assert provider.collected_resources() == {"notifications"}
+
+    asyncio.run(check())
+
+
+def test_an_empty_collection_still_counts_as_collected() -> None:
+    """Zero unread notifications must keep its sensor; the old rule dropped it."""
+    import asyncio
+
+    import aiohttp
+
+    from dev_cloud.providers import get_provider
+
+    async def check() -> None:
+        async with aiohttp.ClientSession() as session:
+            # A token, because notifications are unavailable anonymously and would then be
+            # correctly skipped rather than collected.
+            provider = get_provider(
+                "github", session=session, account_name="x", api_token="t"
+            )
+
+            async def _empty() -> list[str]:
+                return []
+
+            await provider.async_resource("notifications", _empty, [])
+            assert "notifications" in provider.collected_resources()
+
+    asyncio.run(check())
+
+
+def test_a_resource_unavailable_without_a_token_is_not_marked_collected() -> None:
+    """The counterpart: never fetched means no sensor, which is the correct absence."""
+    import asyncio
+
+    import aiohttp
+
+    from dev_cloud.providers import get_provider
+
+    async def check() -> None:
+        async with aiohttp.ClientSession() as session:
+            provider = get_provider("github", session=session, account_name="x")
+
+            async def _unreachable() -> list[str]:
+                raise AssertionError("must not be called without a token")
+
+            await provider.async_resource("notifications", _unreachable, [])
+            assert "notifications" not in provider.collected_resources()
+
+    asyncio.run(check())

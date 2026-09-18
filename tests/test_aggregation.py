@@ -40,6 +40,7 @@ def _data() -> DevCloudData:
             ),
             OrgData(name="Unknown", is_owned=None, repos=[_repo("Unknown/x", stars=999)]),
         ],
+        collected={"repos", "orgs", "releases"},
     )
 
 
@@ -136,6 +137,7 @@ def test_issue_and_pr_totals_are_summed_from_the_repositories() -> None:
     data = DevCloudData(
         profile=ProfileData(username="x"),
         repos=[_repo_with_issues("o/a", 3, 2), _repo_with_issues("o/b", 1, 0)],
+        collected={"repos", "issues", "prs"},
     )
     coordinator = _FakeCoordinator(data, include_non_owned_orgs=False)
 
@@ -147,7 +149,10 @@ def test_issues_of_uncounted_organisations_are_excluded() -> None:
     """Same rule as every other total: non-owned orgs only count when the option says so."""
     org = OrgData(name="Other", is_owned=False, repos=[_repo_with_issues("Other/x", 99, 99)])
     data = DevCloudData(
-        profile=ProfileData(username="x"), repos=[_repo_with_issues("o/a", 3, 2)], orgs=[org]
+        profile=ProfileData(username="x"),
+        repos=[_repo_with_issues("o/a", 3, 2)],
+        orgs=[org],
+        collected={"repos", "orgs", "issues", "prs"},
     )
 
     assert aggregation.counted_issues(_FakeCoordinator(data, include_non_owned_orgs=False)) == 3
@@ -157,7 +162,8 @@ def test_issues_of_uncounted_organisations_are_excluded() -> None:
 def test_platforms_without_issue_lists_fall_back_to_the_reported_count() -> None:
     repo = _repo("o/a")
     repo.open_issues = 7
-    data = DevCloudData(profile=ProfileData(username="x"), repos=[repo])
+    # "repos" collected but not "issues": the platform never enumerates them.
+    data = DevCloudData(profile=ProfileData(username="x"), repos=[repo], collected={"repos"})
 
     assert aggregation.counted_issues(_FakeCoordinator(data, include_non_owned_orgs=False)) == 7
     assert aggregation.counted_prs(_FakeCoordinator(data, include_non_owned_orgs=False)) is None
@@ -192,3 +198,32 @@ def test_a_nested_release_does_not_name_its_own_repository() -> None:
         "github", "x", DevCloudData(profile=ProfileData(username="x"), repos=[repo])
     )
     assert "repository" not in payload["repos"][0]["releases"][0]
+
+
+def test_zero_is_a_reading_but_uncollected_is_an_absence() -> None:
+    """The distinction the whole registration rule rests on: an empty collection that was
+    fetched still answers the question, one that was never fetched does not."""
+    fetched_empty = DevCloudData(
+        profile=ProfileData(username="x"), repos=[], collected={"repos"}
+    )
+    never_fetched = DevCloudData(profile=ProfileData(username="x"), repos=[])
+
+    assert aggregation.collection_total(
+        _FakeCoordinator(fetched_empty, include_non_owned_orgs=False), "repos"
+    ) == 0
+    assert aggregation.collection_total(
+        _FakeCoordinator(never_fetched, include_non_owned_orgs=False), "repos"
+    ) is None
+
+
+def test_issue_total_is_zero_when_collected_and_empty() -> None:
+    """Regression: zero open issues used to remove the sensor rather than report zero."""
+    data = DevCloudData(
+        profile=ProfileData(username="x"),
+        repos=[_repo("o/a")],
+        collected={"repos", "issues", "prs"},
+    )
+    coordinator = _FakeCoordinator(data, include_non_owned_orgs=False)
+
+    assert aggregation.counted_issues(coordinator) == 0
+    assert aggregation.counted_prs(coordinator) == 0

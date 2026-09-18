@@ -564,6 +564,7 @@ class GitHubProvider(BaseDevCloudProvider):
                 rate_limit_remaining=self.scheduler.budget().remaining,
                 scheduling=self.scheduler.diagnostics(),
                 resources=self.scheduler.persisted_state(),
+                collected=self.collected_resources(),
             )
 
         repos: list[RepoData] = await self.async_resource("repos", self._async_fetch_repos, [])
@@ -622,4 +623,5 @@ class GitHubProvider(BaseDevCloudProvider):
             rate_limit_reset=int(reset_epoch) if reset_epoch is not None else None,
             scheduling=self.scheduler.diagnostics(),
             resources=self.scheduler.persisted_state(),
+            collected=self.collected_resources(),
         )

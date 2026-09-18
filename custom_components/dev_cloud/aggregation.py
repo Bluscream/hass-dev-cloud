@@ -54,9 +54,8 @@ def collection_total(coordinator: DevCloudCoordinator, field: str) -> int | None
     is why that total exists only when there is no list to measure.
     """
     data = coordinator.data
-    items = getattr(data, field, None)
-    if items:
-        return len(items)
+    if field in data.collected:
+        return len(getattr(data, field, ()))
     return data.totals.get(field)
 
 
@@ -78,8 +77,9 @@ def _counted_sub_items(
     coordinator: DevCloudCoordinator, field: str, count_attr: str | None
 ) -> int | None:
     repos = counted_repos(coordinator)
-    if any(getattr(repo, field, None) for repo in repos):
+    if field in coordinator.data.collected:
         return sum(len(getattr(repo, field, ())) for repo in repos)
+    # Platforms that never enumerate them report a per-repository count instead.
     if count_attr is not None and any(getattr(repo, count_attr, 0) for repo in repos):
         return sum(getattr(repo, count_attr, 0) for repo in repos)
     return None

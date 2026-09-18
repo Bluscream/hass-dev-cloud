@@ -226,6 +226,15 @@ class BaseDevCloudProvider(ABC):
         self._resource_values[key] = value
         return value
 
+    def collected_resources(self) -> set[str]:
+        """Resources that have been fetched successfully at least once.
+
+        Derived from what was actually stored rather than from anything a provider declares
+        about itself, so a provider cannot claim a capability it does not deliver, and one
+        that quietly starts returning a collection gets its sensor without being changed.
+        """
+        return set(self._resource_values)
+
     def get_headers(self) -> dict[str, str]:
         """Return default headers."""
         headers = {

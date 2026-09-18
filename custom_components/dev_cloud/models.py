@@ -144,6 +144,11 @@ class DevCloudData:
     # has no CI or no token, which len(running_jobs) cannot distinguish from "none running".
     running_jobs_count: int | None = None
     running_jobs: list[dict[str, Any]] = field(default_factory=list)
+    # Resources this provider actually fetched at least once. An empty list cannot say
+    # whether a collection is empty or was never collected, and those mean opposite things
+    # to a sensor: "zero unread notifications" is a reading, "this platform has no
+    # notifications" is an absence. Membership here is the difference.
+    collected: set[str] = field(default_factory=set)
     # Totals the API reported for collections that were *not* enumerated, keyed by the field
     # they describe ("repos", "pastes", ...). Populated only when the matching list is absent,
     # so nothing here ever duplicates a len() a consumer could take itself.
