@@ -119,7 +119,7 @@ def test_a_reported_total_never_coexists_with_the_list_it_describes() -> None:
         repos=[_repo("o/r")],
         totals={"repos": 580},
     )
-    payload = storage._serialize("github", "x", data)
+    payload = storage.build_snapshot("github", "x", data)
 
     assert not (payload.get("repos") and payload.get("totals", {}).get("repos")), (
         "a total and its list must not both be published"
@@ -175,7 +175,7 @@ def test_repo_issue_count_is_dropped_once_both_lists_are_present() -> None:
 
     repo = _repo_with_issues("o/a", 3, 2)
     repo.open_issues = 5
-    payload = storage._serialize(
+    payload = storage.build_snapshot(
         "github", "x", DevCloudData(profile=ProfileData(username="x"), repos=[repo])
     )
 
@@ -194,7 +194,7 @@ def test_a_nested_release_does_not_name_its_own_repository() -> None:
     from dev_cloud import storage
 
     repo = _repo("o/a", downloads=5)
-    payload = storage._serialize(
+    payload = storage.build_snapshot(
         "github", "x", DevCloudData(profile=ProfileData(username="x"), repos=[repo])
     )
     assert "repository" not in payload["repos"][0]["releases"][0]

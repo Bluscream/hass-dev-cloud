@@ -29,10 +29,15 @@ from .const import (
     DEFAULT_SCAN_INTERVAL_AUTHENTICATED,
     DOMAIN,
 )
-from .events import AccountState, changes, snapshot
+from .events import changes
 from .models import DevCloudData
 from .providers import DevCloudProviderError, get_provider
-from .storage import async_dump_dev_cloud_json, async_load_dev_cloud_json, build_json_url
+from .storage import (
+    async_load_dev_cloud_json,
+    async_write_snapshot,
+    build_json_url,
+    build_snapshot,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,8 +93,10 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         # repository on each property access.
         self.totals: Totals | None = None
 
-        # Reduced form of the previous poll, kept purely to diff against.
-        self._previous: AccountState | None = None
+        # The previous poll's serialised snapshot, diffed against the next one. Serialised
+        # rather than live, because the provider mutates its cached objects in place — a
+        # reference to the previous result would end up comparing objects against themselves.
+        self._previous: dict[str, Any] | None = None
 
         super().__init__(
             hass,
@@ -120,6 +127,10 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
             _LOGGER.debug("Ignoring unusable snapshot for %s: %s", self.account_name, err)
             return
 
+        # The restored file is also the baseline for change detection, so a restart does
+        # not lose the events that happened while it was down.
+        self._previous = snapshot
+
         _LOGGER.debug(
             "Restored %s:%s from its published snapshot", self.platform_id, self.account_name
         )
@@ -136,17 +147,17 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         except Exception as err:
             raise UpdateFailed(f"Unexpected error fetching {self.platform_id} data: {err}") from err
 
-        current = snapshot(data)
-        if self.enable_events:
-            self._fire(changes(self._previous, current))
-        self._previous = current
-
-        # Set before returning, so a sensor read triggered by the update already sees
+        # Set before anything reads them, so a sensor refresh triggered by this update sees
         # totals matching the data it is reading.
         self.data = data
         self.totals = compute_totals(self)
 
-        # Export the complete snapshot to /config/www so sensors only need to carry counts.
-        await async_dump_dev_cloud_json(self.hass, self.platform_id, self.account_name, data)
+        # Serialised once and used twice: diffed against the previous poll, then written.
+        payload = build_snapshot(self.platform_id, self.account_name, data)
+        if self.enable_events:
+            self._fire(changes(self._previous, payload))
+        self._previous = payload
+
+        await async_write_snapshot(self.hass, self.platform_id, self.account_name, payload)
 
         return data

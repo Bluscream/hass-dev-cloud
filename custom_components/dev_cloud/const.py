@@ -39,12 +39,34 @@ RUNNING_JOBS_CONCURRENCY: Final = 5
 EVENT_DEV_CLOUD: Final = "dev_cloud_event"
 EVENT_NEW_REPO: Final = "dev_cloud_new_repo"
 EVENT_REPO_REMOVED: Final = "dev_cloud_repo_removed"
-EVENT_NEW_RELEASE: Final = "dev_cloud_new_release"
+EVENT_REPO_CHANGED: Final = "dev_cloud_repo_changed"
+EVENT_REPO_RENAMED: Final = "dev_cloud_repo_renamed"
+EVENT_REPO_ARCHIVED: Final = "dev_cloud_repo_archived"
+EVENT_REPO_VISIBILITY_CHANGED: Final = "dev_cloud_repo_visibility_changed"
 EVENT_STARS_CHANGED: Final = "dev_cloud_stars_changed"
+EVENT_FORKS_CHANGED: Final = "dev_cloud_forks_changed"
+
+EVENT_NEW_RELEASE: Final = "dev_cloud_new_release"
+EVENT_RELEASE_REMOVED: Final = "dev_cloud_release_removed"
+EVENT_RELEASE_CHANGED: Final = "dev_cloud_release_changed"
+
+EVENT_NEW_BRANCH: Final = "dev_cloud_new_branch"
+EVENT_BRANCH_REMOVED: Final = "dev_cloud_branch_removed"
+EVENT_NEW_TAG: Final = "dev_cloud_new_tag"
+EVENT_TAG_REMOVED: Final = "dev_cloud_tag_removed"
+
+EVENT_NEW_ISSUE: Final = "dev_cloud_new_issue"
+EVENT_ISSUE_CLOSED: Final = "dev_cloud_issue_closed"
+EVENT_NEW_PR: Final = "dev_cloud_new_pull_request"
+EVENT_PR_CLOSED: Final = "dev_cloud_pull_request_closed"
+
 EVENT_NEW_PACKAGE: Final = "dev_cloud_new_package"
 EVENT_PACKAGE_REMOVED: Final = "dev_cloud_package_removed"
+EVENT_PACKAGE_CHANGED: Final = "dev_cloud_package_changed"
+
 EVENT_NEW_ORG: Final = "dev_cloud_new_org"
 EVENT_ORG_REMOVED: Final = "dev_cloud_org_removed"
+
 EVENT_NEW_NOTIFICATION: Final = "dev_cloud_new_notification"
 
 # Platforms

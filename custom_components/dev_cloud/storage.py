@@ -142,8 +142,12 @@ def _drop_repo_counts_with_lists(snapshot: dict[str, Any]) -> dict[str, Any]:
     return snapshot
 
 
-def _serialize(platform: str, account: str, data: DevCloudData) -> dict[str, Any]:
-    """Build the full JSON payload for one account snapshot."""
+def build_snapshot(platform: str, account: str, data: DevCloudData) -> dict[str, Any]:
+    """Build the full JSON payload for one account snapshot.
+
+    Public because the coordinator diffs this against the previous poll's payload — the
+    same document that gets written, serialised once and used twice.
+    """
     snapshot = _prune(
         _drop_repo_counts_with_lists(
             _drop_totals_with_a_list(
@@ -184,11 +188,11 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-async def async_dump_dev_cloud_json(
+async def async_write_snapshot(
     hass: HomeAssistant,
     platform: str,
     account: str,
-    data: DevCloudData,
+    payload: dict[str, Any],
 ) -> bool:
     """Dump a snapshot to the www cache. Returns whether the write succeeded.
 
@@ -196,7 +200,6 @@ async def async_dump_dev_cloud_json(
     """
     path = _build_json_path(hass, platform, account)
     try:
-        payload = _serialize(platform, account, data)
         await hass.async_add_executor_job(_write_json, path, payload)
     except Exception as err:
         # Broad by design: a cache write must never break polling.

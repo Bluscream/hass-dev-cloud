@@ -99,7 +99,7 @@ def test_snapshot_carries_no_count_that_measures_a_list_it_contains() -> None:
     """Counts drifted from the lists beside them; downloads was wrong by 48x."""
     from dev_cloud.models import DevCloudData, ProfileData
 
-    payload = storage._serialize("github", "x", DevCloudData(profile=ProfileData(username="x")))
+    payload = storage.build_snapshot("github", "x", DevCloudData(profile=ProfileData(username="x")))
     for key in payload:
         if key.endswith("_count"):
             assert key.removesuffix("_count") not in payload, f"{key} duplicates a list"
@@ -198,7 +198,7 @@ def test_no_top_level_count_duplicates_a_list_length() -> None:
     from dev_cloud.models import DevCloudData, ProfileData
 
     data = DevCloudData(profile=ProfileData(username="x"), sponsors_count=3)
-    payload = storage._serialize("github", "x", data)
+    payload = storage.build_snapshot("github", "x", data)
 
     lists = {k: v for k, v in payload.items() if isinstance(v, list)}
     for key, value in payload.items():

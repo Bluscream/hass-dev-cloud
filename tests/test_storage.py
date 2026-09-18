@@ -45,7 +45,7 @@ def test_json_url_escapes_an_account_name_that_survives_slugification() -> None:
 def test_serialize_drops_only_the_derivable_count() -> None:
     """running_jobs_count is len(running_jobs); sponsors_count has no list to derive from."""
     data = _snapshot(running_jobs_count=0, running_jobs=[], sponsors_count=3)
-    payload = storage._serialize("github", "Bluscream", data)
+    payload = storage.build_snapshot("github", "Bluscream", data)
 
     assert "running_jobs_count" not in payload
     assert payload["sponsors_count"] == 3
@@ -60,7 +60,7 @@ def test_serialize_redacts_credential_shaped_keys() -> None:
     )
     data.profile.extra = {"private_key": "SECRET", "bio": "kept"}
 
-    payload = storage._serialize("github", "Bluscream", data)
+    payload = storage.build_snapshot("github", "Bluscream", data)
     blob = json.dumps(payload)
 
     assert "SECRET" not in blob
@@ -104,7 +104,7 @@ def test_write_json_is_minified(tmp_path: Path) -> None:
 
 def test_serialize_prunes_values_that_say_nothing() -> None:
     data = _snapshot(repos=[RepoData(name="r", full_name="o/r", url="u")])
-    payload = storage._serialize("github", "Bluscream", data)
+    payload = storage.build_snapshot("github", "Bluscream", data)
 
     assert "orgs" not in payload, "an empty list carries no information"
     assert "error" not in payload
@@ -119,7 +119,7 @@ def test_serialize_keeps_zero_and_false() -> None:
         repos=[RepoData(name="r", full_name="o/r", url="u", stars=0, is_fork=False)],
         sponsors_count=0,
     )
-    payload = storage._serialize("github", "Bluscream", data)
+    payload = storage.build_snapshot("github", "Bluscream", data)
 
     assert payload["sponsors_count"] == 0
     assert payload["repos"][0]["stars"] == 0

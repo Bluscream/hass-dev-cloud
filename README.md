@@ -308,53 +308,89 @@ exhausted a GraphQL budget during development.
 ## Events
 
 Fired on the Home Assistant bus when **Enable events** is on. Every payload carries
-`platform` and `account` alongside the fields below.
+`platform` and `account`, and **the whole item** — so an automation never has to look
+anything up.
 
-| Event | Fired when | Payload |
-| :--- | :--- | :--- |
-| `dev_cloud_new_repo` | a repository appears | `repository`, `url` |
-| `dev_cloud_repo_removed` | a repository is deleted or transferred | `repository` |
-| `dev_cloud_new_release` | a release is published | `repository`, `tag`, `url` |
-| `dev_cloud_stars_changed` | a repository gains or loses stars | `repository`, `url`, `stars`, `previous_stars`, `delta` |
-| `dev_cloud_new_package` | a package appears | `package` |
-| `dev_cloud_package_removed` | a package disappears | `package` |
-| `dev_cloud_new_org` | an organisation membership appears | `organization` |
-| `dev_cloud_org_removed` | an organisation membership ends | `organization` |
-| `dev_cloud_new_notification` | an unread notification arrives | `id`, `title`, `repository`, `url`, `reason`, `subject_type` |
+| Event | Payload |
+| :--- | :--- |
+| `dev_cloud_new_repo` | `repository`, `repo` (with its releases, branches, tags) |
+| `dev_cloud_repo_removed` | `repository`, `repo` — its last known state |
+| `dev_cloud_repo_changed` | `repository`, `old`, `new`, `changed` (field names) |
+| `dev_cloud_repo_renamed` | `repository`, `old`, `new`, `previous_name`, `name` |
+| `dev_cloud_repo_archived` | `repository`, `old`, `new`, `archived` |
+| `dev_cloud_repo_visibility_changed` | `repository`, `old`, `new`, `private` |
+| `dev_cloud_stars_changed` | `repository`, `old`, `new`, `stars`, `previous_stars`, `delta` |
+| `dev_cloud_forks_changed` | as above, with `forks` / `previous_forks` |
+| `dev_cloud_new_release` | `repository`, `tag`, `release` (with its assets) |
+| `dev_cloud_release_removed` | `repository`, `tag`, `release` |
+| `dev_cloud_release_changed` | `repository`, `tag`, `old`, `new`, `changed` |
+| `dev_cloud_new_branch` / `_branch_removed` | `repository`, `name`, `branch` |
+| `dev_cloud_new_tag` / `_tag_removed` | `repository`, `name`, `tag` |
+| `dev_cloud_new_issue` / `_issue_closed` | `repository`, `issue` |
+| `dev_cloud_new_pull_request` / `_pull_request_closed` | `repository`, `pull_request` |
+| `dev_cloud_new_package` / `_package_removed` | `name`, `package` |
+| `dev_cloud_package_changed` | `name`, `old`, `new`, `changed` |
+| `dev_cloud_new_org` / `_org_removed` | `name`, `organization` |
+| `dev_cloud_new_notification` | `title`, `repository`, `url`, `reason`, `subject_type`, `notification` |
 
-`delta` is negative when stars are lost, so one trigger covers both directions.
+`delta` is signed, so one trigger covers a star gained and a star lost.
+
+Issue and pull request lists hold only open ones, so a disappearance means closed or merged
+rather than deleted.
+
+### How changes are detected
+
+Against the **previous snapshot**, not the previous objects. The provider mutates its cached
+objects in place, so comparing live objects would compare a thing against itself. The
+snapshot is built every poll anyway, so the diff is free — and because the same document is
+reloaded at startup, **events survive a restart** rather than starting from no baseline.
 
 ### What is deliberately not fired
 
-**Nothing on the first poll.** Without a baseline every existing repository, package and
-organisation would be announced at once.
+**Nothing on the first poll of a fresh account.** Otherwise every existing repository,
+package and organisation announces itself at once.
 
-**Nothing from a collection that was not fetched.** A resource that is skipped, unavailable
-or failed keeps its previous value, and is not compared at all — so a failed request can
-never look like a mass deletion.
+**Nothing from a collection that was not fetched.** A skipped, unavailable or failed resource
+keeps its previous value and is not compared, so a failed request can never look like a mass
+deletion.
 
 **Nothing when a collection empties entirely.** Everything vanishing in one poll is far more
-likely to be a bad response than a real deletion of all of it, so removals are suppressed in
-that case and logged instead.
+likely to be a bad response than a real deletion of all of it.
+
+**Nothing for values that only ever move one way.** Download and pull counts tick upward
+constantly; treating those as changes would fire an event on every poll, so they are excluded
+from change detection while remaining in the snapshot and the sensors.
 
 ### Example automation
 
 ```yaml
 triggers:
   - trigger: event
+    event_type: dev_cloud_stars_changed
+  - trigger: event
     event_type: dev_cloud_new_notification
+  - trigger: event
+    event_type: dev_cloud_new_release
 actions:
   - action: notify.mobile_app_phone
     data:
-      title: "🔔 {{ trigger.event.data.repository or trigger.event.data.platform }}"
-      message: "{{ trigger.event.data.title }}"
-      data:
-        url: "{{ trigger.event.data.url }}"
+      title: >-
+        {% set d = trigger.event.data %}
+        {% if trigger.event.event_type == 'dev_cloud_stars_changed' %}
+          ⭐ {{ d.repository }} {{ '+' if d.delta > 0 else '' }}{{ d.delta }}
+        {% elif trigger.event.event_type == 'dev_cloud_new_release' %}
+          🚀 {{ d.repository }} {{ d.tag }}
+        {% else %}
+          🔔 {{ d.repository or d.platform }}
+        {% endif %}
+      message: >-
+        {% set d = trigger.event.data %}
+        {{ d.title | default(d.new.description) | default(d.repository) }}
 ```
 
-Events are the right trigger for anything you want pushed. A sensor tells you how many
-notifications exist; the event tells you one just arrived, and what it was — which a state
-trigger cannot, since the sensor's attributes carry only counts.
+Events are the right trigger for anything you want pushed. A sensor says how many
+notifications exist; the event says one just arrived and what it was — which a state trigger
+cannot, because the sensor's attributes carry only counts.
 
 ## Development
 

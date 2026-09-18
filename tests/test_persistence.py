@@ -47,7 +47,7 @@ def _snapshot() -> dict[str, Any]:
         "repo_detail": {"fetched_at": now, "cost": 16},
         "retired_resource": {"fetched_at": now, "cost": 1},
     }
-    return storage._serialize("github", "Bluscream", data)
+    return storage.build_snapshot("github", "Bluscream", data)
 
 
 async def test_restore_rebuilds_typed_values(provider: Any) -> None:

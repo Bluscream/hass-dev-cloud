@@ -1,189 +1,284 @@
 """Change detection between two polls.
 
-Sensors say how much of something there is; events say what just happened. The difference
-matters for notifications — "you have 312 stars" is a dashboard figure, "someone starred
-VRCOSC-Modules" is worth a push.
+Sensors say how much of something there is; events say what just happened. "You have 312
+stars" is a dashboard figure — "someone starred VRCOSC-Modules, it went 41 to 42" is worth a
+push, and carries enough to write the message from.
 
-Detection is a pure function of two snapshots, so it is testable without Home Assistant and
-cannot accidentally depend on anything but the data.
+Detection runs over the **serialised snapshots** rather than the live objects, for three
+reasons. The provider mutates its cached objects in place, so holding a reference to the
+previous poll would compare a thing against itself. The snapshot is already built every poll
+for writing, so diffing it costs nothing extra. And it is the same document reloaded at
+startup, so events survive a restart instead of starting from no baseline.
+
+Every payload carries the whole item, old and new where both exist, so an automation never
+has to go looking anything up.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 from .const import (
+    EVENT_BRANCH_REMOVED,
+    EVENT_FORKS_CHANGED,
+    EVENT_ISSUE_CLOSED,
+    EVENT_NEW_BRANCH,
+    EVENT_NEW_ISSUE,
     EVENT_NEW_NOTIFICATION,
     EVENT_NEW_ORG,
     EVENT_NEW_PACKAGE,
+    EVENT_NEW_PR,
     EVENT_NEW_RELEASE,
     EVENT_NEW_REPO,
+    EVENT_NEW_TAG,
     EVENT_ORG_REMOVED,
+    EVENT_PACKAGE_CHANGED,
     EVENT_PACKAGE_REMOVED,
+    EVENT_PR_CLOSED,
+    EVENT_RELEASE_CHANGED,
+    EVENT_RELEASE_REMOVED,
+    EVENT_REPO_ARCHIVED,
+    EVENT_REPO_CHANGED,
     EVENT_REPO_REMOVED,
+    EVENT_REPO_RENAMED,
+    EVENT_REPO_VISIBILITY_CHANGED,
     EVENT_STARS_CHANGED,
+    EVENT_TAG_REMOVED,
 )
-from .models import DevCloudData
 
 _LOGGER = logging.getLogger(__name__)
 
+Event = tuple[str, dict[str, Any]]
+Item = dict[str, Any]
 
-@dataclass(frozen=True, slots=True)
-class RepoState:
-    """The parts of a repository worth reacting to a change in."""
-
-    url: str
-    stars: int
-    forks: int
-    release_tags: frozenset[str]
+#: Repository fields worth an event when they change. Deliberately excludes anything that
+#: moves on its own — download counts tick upward constantly and would fire every poll.
+_REPO_WATCHED = ("stars", "forks", "watchers", "description", "default_branch", "upstream")
+_RELEASE_WATCHED = ("name", "tag", "published_at")
+_PACKAGE_WATCHED = ("version",)
 
 
-@dataclass(frozen=True, slots=True)
-class AccountState:
-    """Everything change detection compares, reduced to what it needs.
+def _by(items: list[Item] | None, key: str) -> dict[str, Item]:
+    """Index a list of serialised items by one of their fields."""
+    return {str(i[key]): i for i in items or [] if isinstance(i, dict) and i.get(key) is not None}
 
-    Deliberately not the full snapshot: holding one of those per account purely to diff
-    against would double the integration's memory for no gain.
+
+def _changed_fields(old: Item, new: Item, watched: tuple[str, ...]) -> list[str]:
+    return [f for f in watched if old.get(f) != new.get(f)]
+
+
+def _comparable(previous: Item, current: Item, resource: str, collection: str) -> bool:
+    """Whether a collection can be diffed at all this poll.
+
+    Not collected means the previous value was reused, so there is nothing to compare. A
+    collection that emptied entirely is treated as a failed response rather than a mass
+    deletion — announcing 580 removals because one request failed is the worst thing this
+    module could do.
     """
-
-    repos: dict[str, RepoState] = field(default_factory=dict)
-    packages: frozenset[str] = frozenset()
-    orgs: frozenset[str] = frozenset()
-    notifications: dict[str, dict[str, Any]] = field(default_factory=dict)
-    #: Which collections were actually fetched, so an absent one is never read as emptied.
-    collected: frozenset[str] = frozenset()
-
-
-def snapshot(data: DevCloudData) -> AccountState:
-    """Reduce a poll result to the parts change detection compares."""
-    repos = {
-        repo.full_name: RepoState(
-            url=repo.url,
-            stars=repo.stars,
-            forks=repo.forks,
-            release_tags=frozenset(
-                str(r.get("tag")) for r in repo.releases if r.get("tag") is not None
-            ),
-        )
-        for repo in data.repos
-        if repo.full_name
-    }
-    return AccountState(
-        repos=repos,
-        packages=frozenset(p.name for p in data.packages),
-        orgs=frozenset(o.name for o in data.orgs),
-        notifications={
-            n.notification_id: {
-                "title": n.title,
-                "repository": n.repository,
-                "url": n.url,
-                "reason": n.reason,
-                "subject_type": n.subject_type,
-            }
-            for n in data.notifications
-            if n.unread
-        },
-        collected=frozenset(data.collected),
-    )
+    if resource not in set(previous.get("collected") or ()) | {"__always__"}:
+        return False
+    if resource not in set(current.get("collected") or ()):
+        return False
+    if previous.get(collection) and not current.get(collection):
+        _LOGGER.debug("%s came back empty; treating as a failed fetch, not a deletion", collection)
+        return False
+    return True
 
 
-def changes(
-    previous: AccountState | None, current: AccountState
-) -> list[tuple[str, dict[str, Any]]]:
-    """Events describing what changed between two polls.
+def changes(previous: Item | None, current: Item) -> list[Event]:
+    """Every change between two serialised snapshots.
 
-    Returns nothing when there is no baseline: the first poll of a process would otherwise
+    Returns nothing without a baseline: the first poll of a fresh account would otherwise
     announce every repository, package and organisation that already existed.
     """
-    if previous is None:
+    if not previous:
         return []
 
-    events: list[tuple[str, dict[str, Any]]] = []
+    events: list[Event] = []
     events += _repo_changes(previous, current)
-    events += _membership_changes(previous, current)
+    events += _simple_collection(
+        previous, current, "orgs", "name", EVENT_NEW_ORG, EVENT_ORG_REMOVED, "organization"
+    )
+    events += _package_changes(previous, current)
     events += _notification_changes(previous, current)
     return events
 
 
-def _fetched(previous: AccountState, current: AccountState, resource: str) -> bool:
-    """Whether a collection can be compared at all this poll.
-
-    A collection that was not fetched, or that came back empty after being populated, is a
-    failed fetch rather than a mass deletion — and announcing 580 removals because one
-    request failed is the worst thing this module could do.
-    """
-    return resource in current.collected and resource in previous.collected
-
-
-def _repo_changes(
-    previous: AccountState, current: AccountState
-) -> list[tuple[str, dict[str, Any]]]:
-    if not _fetched(previous, current, "repos"):
-        return []
-    if previous.repos and not current.repos:
-        _LOGGER.debug("Repository listing came back empty; treating as a failed fetch")
+def _repo_changes(previous: Item, current: Item) -> list[Event]:
+    if not _comparable(previous, current, "repos", "repos"):
         return []
 
-    events: list[tuple[str, dict[str, Any]]] = []
+    was, now = _by(previous.get("repos"), "full_name"), _by(current.get("repos"), "full_name")
+    events: list[Event] = []
 
-    for name in current.repos.keys() - previous.repos.keys():
-        events.append((EVENT_NEW_REPO, {"repository": name, "url": current.repos[name].url}))
-    for name in previous.repos.keys() - current.repos.keys():
-        events.append((EVENT_REPO_REMOVED, {"repository": name}))
+    for name in now.keys() - was.keys():
+        events.append((EVENT_NEW_REPO, {"repository": name, "repo": now[name]}))
+    for name in was.keys() - now.keys():
+        events.append((EVENT_REPO_REMOVED, {"repository": name, "repo": was[name]}))
 
-    for name in current.repos.keys() & previous.repos.keys():
-        was, now = previous.repos[name], current.repos[name]
+    for name in now.keys() & was.keys():
+        events += _one_repo(name, was[name], now[name])
 
-        if now.stars != was.stars:
+    return events
+
+
+def _one_repo(name: str, old: Item, new: Item) -> list[Event]:
+    """Changes within a single repository, from the headline down to its refs."""
+    events: list[Event] = []
+    common = {"repository": name, "old": old, "new": new}
+
+    if old.get("stars") != new.get("stars"):
+        events.append(
+            (
+                EVENT_STARS_CHANGED,
+                {
+                    **common,
+                    "stars": new.get("stars", 0),
+                    "previous_stars": old.get("stars", 0),
+                    "delta": new.get("stars", 0) - old.get("stars", 0),
+                },
+            )
+        )
+    if old.get("forks") != new.get("forks"):
+        events.append(
+            (
+                EVENT_FORKS_CHANGED,
+                {
+                    **common,
+                    "forks": new.get("forks", 0),
+                    "previous_forks": old.get("forks", 0),
+                    "delta": new.get("forks", 0) - old.get("forks", 0),
+                },
+            )
+        )
+    if old.get("is_archived") != new.get("is_archived"):
+        events.append((EVENT_REPO_ARCHIVED, {**common, "archived": bool(new.get("is_archived"))}))
+    if old.get("is_private") != new.get("is_private"):
+        events.append(
+            (EVENT_REPO_VISIBILITY_CHANGED, {**common, "private": bool(new.get("is_private"))})
+        )
+    if old.get("name") != new.get("name"):
+        events.append(
+            (
+                EVENT_REPO_RENAMED,
+                {**common, "previous_name": old.get("name"), "name": new.get("name")},
+            )
+        )
+
+    fields = _changed_fields(old, new, _REPO_WATCHED)
+    if fields:
+        events.append((EVENT_REPO_CHANGED, {**common, "changed": fields}))
+
+    events += _release_changes(name, old, new)
+    events += _ref_changes(
+        name, old, new, "branches", EVENT_NEW_BRANCH, EVENT_BRANCH_REMOVED, "branch"
+    )
+    events += _ref_changes(name, old, new, "tags", EVENT_NEW_TAG, EVENT_TAG_REMOVED, "tag")
+    events += _thread_changes(
+        name, old, new, "issues", EVENT_NEW_ISSUE, EVENT_ISSUE_CLOSED, "issue"
+    )
+    events += _thread_changes(name, old, new, "prs", EVENT_NEW_PR, EVENT_PR_CLOSED, "pull_request")
+    return events
+
+
+def _release_changes(repository: str, old: Item, new: Item) -> list[Event]:
+    was, now = _by(old.get("releases"), "tag"), _by(new.get("releases"), "tag")
+    events: list[Event] = []
+
+    for tag in now.keys() - was.keys():
+        events.append(
+            (EVENT_NEW_RELEASE, {"repository": repository, "tag": tag, "release": now[tag]})
+        )
+    for tag in was.keys() - now.keys():
+        events.append(
+            (EVENT_RELEASE_REMOVED, {"repository": repository, "tag": tag, "release": was[tag]})
+        )
+    for tag in now.keys() & was.keys():
+        fields = _changed_fields(was[tag], now[tag], _RELEASE_WATCHED)
+        if fields:
             events.append(
                 (
-                    EVENT_STARS_CHANGED,
+                    EVENT_RELEASE_CHANGED,
                     {
-                        "repository": name,
-                        "url": now.url,
-                        "stars": now.stars,
-                        "previous_stars": was.stars,
-                        "delta": now.stars - was.stars,
+                        "repository": repository,
+                        "tag": tag,
+                        "old": was[tag],
+                        "new": now[tag],
+                        "changed": fields,
                     },
                 )
             )
-
-        for tag in now.release_tags - was.release_tags:
-            events.append((EVENT_NEW_RELEASE, {"repository": name, "tag": tag, "url": now.url}))
-
     return events
 
 
-def _membership_changes(
-    previous: AccountState, current: AccountState
-) -> list[tuple[str, dict[str, Any]]]:
-    events: list[tuple[str, dict[str, Any]]] = []
-
-    for resource, added_event, removed_event, field_name, attr in (
-        ("packages", EVENT_NEW_PACKAGE, EVENT_PACKAGE_REMOVED, "package", "packages"),
-        ("orgs", EVENT_NEW_ORG, EVENT_ORG_REMOVED, "organization", "orgs"),
-    ):
-        if not _fetched(previous, current, resource):
-            continue
-        was: frozenset[str] = getattr(previous, attr)
-        now: frozenset[str] = getattr(current, attr)
-        if was and not now:
-            continue
-        events += [(added_event, {field_name: name}) for name in now - was]
-        events += [(removed_event, {field_name: name}) for name in was - now]
-
-    return events
-
-
-def _notification_changes(
-    previous: AccountState, current: AccountState
-) -> list[tuple[str, dict[str, Any]]]:
-    if not _fetched(previous, current, "notifications"):
-        return []
-
+def _ref_changes(
+    repository: str, old: Item, new: Item, field: str, added: str, removed: str, label: str
+) -> list[Event]:
+    was, now = _by(old.get(field), "name"), _by(new.get(field), "name")
     return [
-        (EVENT_NEW_NOTIFICATION, {"id": key, **current.notifications[key]})
-        for key in current.notifications.keys() - previous.notifications.keys()
+        *(
+            (added, {"repository": repository, label: now[n], "name": n})
+            for n in now.keys() - was.keys()
+        ),
+        *(
+            (removed, {"repository": repository, label: was[n], "name": n})
+            for n in was.keys() - now.keys()
+        ),
+    ]
+
+
+def _thread_changes(
+    repository: str, old: Item, new: Item, field: str, opened: str, closed: str, label: str
+) -> list[Event]:
+    """Issues and pull requests. The lists hold only open ones, so a disappearance means it
+    was closed or merged rather than deleted."""
+    was, now = _by(old.get(field), "number"), _by(new.get(field), "number")
+    return [
+        *((opened, {"repository": repository, label: now[n]}) for n in now.keys() - was.keys()),
+        *((closed, {"repository": repository, label: was[n]}) for n in was.keys() - now.keys()),
+    ]
+
+
+def _simple_collection(
+    previous: Item, current: Item, collection: str, key: str, added: str, removed: str, label: str
+) -> list[Event]:
+    if not _comparable(previous, current, collection, collection):
+        return []
+    was, now = _by(previous.get(collection), key), _by(current.get(collection), key)
+    return [
+        *((added, {label: now[n], "name": n}) for n in now.keys() - was.keys()),
+        *((removed, {label: was[n], "name": n}) for n in was.keys() - now.keys()),
+    ]
+
+
+def _package_changes(previous: Item, current: Item) -> list[Event]:
+    if not _comparable(previous, current, "packages", "packages"):
+        return []
+    was, now = _by(previous.get("packages"), "name"), _by(current.get("packages"), "name")
+    events: list[Event] = [
+        *((EVENT_NEW_PACKAGE, {"package": now[n], "name": n}) for n in now.keys() - was.keys()),
+        *((EVENT_PACKAGE_REMOVED, {"package": was[n], "name": n}) for n in was.keys() - now.keys()),
+    ]
+    for name in now.keys() & was.keys():
+        fields = _changed_fields(was[name], now[name], _PACKAGE_WATCHED)
+        if fields:
+            events.append(
+                (
+                    EVENT_PACKAGE_CHANGED,
+                    {"name": name, "old": was[name], "new": now[name], "changed": fields},
+                )
+            )
+    return events
+
+
+def _notification_changes(previous: Item, current: Item) -> list[Event]:
+    if not _comparable(previous, current, "notifications", "notifications"):
+        return []
+    was = _by(previous.get("notifications"), "notification_id")
+    now = _by(current.get("notifications"), "notification_id")
+    return [
+        (EVENT_NEW_NOTIFICATION, {"notification": now[n], **now[n]})
+        for n in now.keys() - was.keys()
+        if now[n].get("unread", True)
     ]
