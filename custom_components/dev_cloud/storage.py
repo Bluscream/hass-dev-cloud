@@ -55,6 +55,25 @@ _SECRET_KEY_PATTERN = re.compile(
 _REDACTED = "***redacted***"
 
 
+# Values carrying no information. `0` and `False` are deliberately absent: a zero download
+# count or `is_fork: false` is an answer, not a missing one.
+_EMPTY = (None, "", [], {})
+
+
+def _prune(value: Any) -> Any:
+    """Drop keys whose value says nothing, recursively.
+
+    Roughly 5% of a snapshot was nulls and empty lists repeated across every item. Consumers
+    read a missing key exactly as they read an empty one, so use `.get(key, default)`.
+    """
+    if isinstance(value, dict):
+        pruned = {k: _prune(v) for k, v in value.items()}
+        return {k: v for k, v in pruned.items() if v not in _EMPTY}
+    if isinstance(value, list):
+        return [_prune(item) for item in value]
+    return value
+
+
 def _redact(value: Any) -> Any:
     """Recursively replace values whose key looks like a credential."""
     if isinstance(value, dict):
@@ -85,7 +104,9 @@ def _build_json_path(hass: HomeAssistant, platform: str, account: str) -> Path:
 
 def _serialize(platform: str, account: str, data: DevCloudData) -> dict[str, Any]:
     """Build the full JSON payload for one account snapshot."""
-    snapshot = _redact({k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS})
+    snapshot = _prune(
+        _redact({k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS})
+    )
     return {
         "platform": platform,
         "account": account,

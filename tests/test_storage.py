@@ -100,3 +100,27 @@ def test_write_json_is_minified(tmp_path: Path) -> None:
     raw = target.read_text()
     assert raw == '{"a":1,"b":[{"c":2}]}'
     assert "\n" not in raw
+
+
+def test_serialize_prunes_values_that_say_nothing() -> None:
+    data = _snapshot(repos=[RepoData(name="r", full_name="o/r", url="u")])
+    payload = storage._serialize("github", "Bluscream", data)
+
+    assert "orgs" not in payload, "an empty list carries no information"
+    assert "error" not in payload
+    repo = payload["repos"][0]
+    assert "upstream" not in repo, "a null field carries no information"
+    assert repo["full_name"] == "o/r"
+
+
+def test_serialize_keeps_zero_and_false() -> None:
+    """A zero count and is_fork=false are answers, not absences."""
+    data = _snapshot(
+        repos=[RepoData(name="r", full_name="o/r", url="u", stars=0, is_fork=False)],
+        sponsors_count=0,
+    )
+    payload = storage._serialize("github", "Bluscream", data)
+
+    assert payload["sponsors_count"] == 0
+    assert payload["repos"][0]["stars"] == 0
+    assert payload["repos"][0]["is_fork"] is False
