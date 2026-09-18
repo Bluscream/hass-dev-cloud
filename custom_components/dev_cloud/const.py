@@ -30,27 +30,39 @@ EVENT_NEW_PACKAGE: Final = "dev_cloud_new_package"
 PLATFORM_GITHUB: Final = "github"
 PLATFORM_GITLAB: Final = "gitlab"
 PLATFORM_GITEA: Final = "gitea"
-PLATFORM_CODEBERG: Final = "codeberg"
 PLATFORM_DOCKERHUB: Final = "dockerhub"
 PLATFORM_NPM: Final = "npm"
 PLATFORM_PYPI: Final = "pypi"
 PLATFORM_NUGET: Final = "nuget"
 
+# Legacy alias for backwards compat if needed
+PLATFORM_CODEBERG: Final = "codeberg"
+
 SUPPORTED_PLATFORMS: Final = {
     PLATFORM_GITHUB: "GitHub",
     PLATFORM_GITLAB: "GitLab",
     PLATFORM_GITEA: "Gitea / Forgejo",
-    PLATFORM_CODEBERG: "Codeberg",
     PLATFORM_DOCKERHUB: "Docker Hub",
     PLATFORM_NPM: "NPM",
     PLATFORM_PYPI: "PyPI (pip)",
     PLATFORM_NUGET: "NuGet",
 }
 
+# Pre-defined public instances for Gitea / Forgejo
+CONF_INSTANCE_PRESET: Final = "instance_preset"
+INSTANCE_CUSTOM: Final = "custom"
+
+GITEA_PRESETS: Final = {
+    "codeberg": {"name": "Codeberg (Forgejo - codeberg.org)", "url": "https://codeberg.org"},
+    "gitea_com": {"name": "Gitea.com (gitea.com)", "url": "https://gitea.com"},
+    "opendev": {"name": "OpenDev (opendev.org)", "url": "https://opendev.org"},
+    INSTANCE_CUSTOM: {"name": "Custom Instance...", "url": ""},
+}
+
 DEFAULT_URLS: Final = {
     PLATFORM_GITHUB: "https://api.github.com",
     PLATFORM_GITLAB: "https://gitlab.com",
-    PLATFORM_GITEA: "https://gitea.com",
+    PLATFORM_GITEA: "https://codeberg.org",
     PLATFORM_CODEBERG: "https://codeberg.org",
     PLATFORM_DOCKERHUB: "https://hub.docker.com",
     PLATFORM_NPM: "https://registry.npmjs.org",

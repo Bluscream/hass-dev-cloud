@@ -13,7 +13,8 @@
         "description": "Enter your account username/handle. Providing a personal access token is recommended to avoid rate limits.",
         "data": {
           "account_name": "Account / Username",
-          "instance_url": "Instance Base URL",
+          "instance_preset": "Gitea / Forgejo Instance",
+          "instance_url": "Instance Base URL (if custom)",
           "api_token": "API Token / Personal Access Token (Optional)"
         }
       }
@@ -21,6 +22,7 @@
     "error": {
       "cannot_connect": "Failed to connect to the platform API.",
       "invalid_auth": "Invalid API token or authentication failed.",
+      "invalid_url": "Please provide a valid URL for your custom instance.",
       "user_not_found": "The specified user account was not found.",
       "rate_limited": "Platform API rate limit exceeded. Please provide an API token.",
       "unknown": "An unexpected error occurred."
