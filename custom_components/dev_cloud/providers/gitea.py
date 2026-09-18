@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from ..const import PLATFORM_GITEA
+from ..const import PLATFORM_GITEA, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
 from ..models import DevCloudData, NotificationData, OrgData, ProfileData, RepoData
-from .base import BaseDevCloudProvider
+from .base import BaseDevCloudProvider, async_collect_running_jobs
+from .scheduling import ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,6 +19,17 @@ class GiteaProvider(BaseDevCloudProvider):
     platform_id = PLATFORM_GITEA
     default_base_url = "https://gitea.com"
     supports_custom_url = True
+
+    # Self-hosted instances are usually small and unmetered, but they are also somebody's
+    # Raspberry Pi — so these stay polite rather than maximal. Notifications and Actions
+    # need a token.
+    resource_policies = {
+        "profile": ResourcePolicy(authenticated=600, anonymous=1800),
+        "repos": ResourcePolicy(authenticated=900, anonymous=3600),
+        "orgs": ResourcePolicy(authenticated=3600, anonymous=7200),
+        "notifications": ResourcePolicy(authenticated=300, anonymous=None),
+        "running_jobs": ResourcePolicy(authenticated=300, anonymous=None),
+    }
 
     def get_headers(self) -> dict[str, str]:
         headers = super().get_headers()
@@ -29,110 +42,153 @@ class GiteaProvider(BaseDevCloudProvider):
         data, _ = await self.async_get_json(url, use_etag=False)
         return bool(data and data.get("username"))
 
-    async def async_fetch(self) -> DevCloudData:
-        # 1. Fetch user profile
-        user_url = f"{self.base_url}/api/v1/users/{self.account_name}"
-        user_json, _ = await self.async_get_json(user_url)
+    async def _async_fetch_running_jobs(
+        self, repos: list[RepoData]
+    ) -> tuple[int | None, list[dict[str, Any]]]:
+        """Count running Gitea/Forgejo Actions runs across the most recently updated repos.
 
-        profile = ProfileData(
-            username=user_json.get("username", self.account_name),
-            display_name=user_json.get("full_name"),
-            user_id=user_json.get("id"),
-            avatar_url=user_json.get("avatar_url"),
-            profile_url=f"{self.base_url}/{user_json.get('username', self.account_name)}",
-            bio=user_json.get("description"),
-            location=user_json.get("location"),
-            blog=user_json.get("website"),
-            email=user_json.get("email"),
-            created_at=user_json.get("created"),
-            followers=user_json.get("followers_count"),
-            following=user_json.get("following_count"),
+        The Actions API needs authentication, and instances older than Gitea 1.22 do not
+        expose it at all — both cases fall through to ``(None, [])`` so the sensor is omitted.
+        """
+        if not self.api_token:
+            return None, []
+
+        candidates = sorted(
+            (r for r in repos if not r.is_archived and r.full_name),
+            key=lambda r: r.updated_at or "",
+            reverse=True,
+        )
+        candidates = [r for r in candidates if r.extra.get("has_actions") is not False][
+            :RUNNING_JOBS_REPO_LIMIT
+        ]
+
+        async def _fetch(repo: RepoData) -> list[dict[str, Any]]:
+            url = f"{self.base_url}/api/v1/repos/{repo.full_name}/actions/runs?status=running"
+            payload, _ = await self.async_get_json(url, use_etag=False)
+            if not isinstance(payload, dict):
+                return []
+            return [
+                {
+                    "id": run.get("id"),
+                    "repository": repo.full_name,
+                    "name": run.get("display_title") or run.get("name"),
+                    "ref": run.get("head_branch"),
+                    "event": run.get("event"),
+                    "status": run.get("status"),
+                    "url": run.get("html_url"),
+                    "created_at": run.get("created_at"),
+                    "updated_at": run.get("updated_at"),
+                }
+                for run in payload.get("workflow_runs", [])
+            ]
+
+        return await async_collect_running_jobs(candidates, _fetch, RUNNING_JOBS_CONCURRENCY)
+
+    async def _async_fetch_profile(self) -> ProfileData:
+        user_url = f"{self.base_url}/api/v1/users/{self.account_name}"
+        u, _ = await self.async_get_json(user_url)
+
+        return ProfileData(
+            username=u.get("username", self.account_name),
+            display_name=u.get("full_name"),
+            user_id=u.get("id"),
+            avatar_url=u.get("avatar_url"),
+            profile_url=f"{self.base_url}/{u.get('username', self.account_name)}",
+            bio=u.get("description"),
+            location=u.get("location"),
+            blog=u.get("website"),
+            email=u.get("email"),
+            created_at=u.get("created"),
+            followers=u.get("followers_count"),
+            following=u.get("following_count"),
         )
 
-        # 2. Fetch user repos
+    async def _async_fetch_repos(self) -> list[RepoData]:
+        url = f"{self.base_url}/api/v1/users/{self.account_name}/repos"
         repos: list[RepoData] = []
-        try:
-            repos_url = f"{self.base_url}/api/v1/users/{self.account_name}/repos?limit=100"
-            repos_json, _ = await self.async_get_json(repos_url)
-            if isinstance(repos_json, list):
-                for r in repos_json:
-                    upstream = None
-                    if r.get("fork") and r.get("parent"):
-                        upstream = r["parent"].get("html_url")
-                    repos.append(
-                        RepoData(
-                            name=r.get("name", ""),
-                            full_name=r.get("full_name", ""),
-                            url=r.get("html_url", ""),
-                            description=r.get("description"),
-                            is_fork=bool(r.get("fork")),
-                            is_private=bool(r.get("private")),
-                            is_archived=bool(r.get("archived")),
-                            stars=r.get("stars_count", 0),
-                            forks=r.get("forks_count", 0),
-                            watchers=r.get("watchers_count", 0),
-                            open_issues=r.get("open_issues_count", 0),
-                            primary_language=r.get("language"),
-                            default_branch=r.get("default_branch"),
-                            created_at=r.get("created_at"),
-                            updated_at=r.get("updated_at"),
-                            upstream=upstream,
-                        )
-                    )
-        except Exception as err:
-            _LOGGER.warning("Error fetching Gitea repos for %s: %s", self.account_name, err)
 
-        # 3. Fetch orgs
-        orgs: list[OrgData] = []
-        try:
-            orgs_url = f"{self.base_url}/api/v1/users/{self.account_name}/orgs?limit=100"
-            orgs_json, _ = await self.async_get_json(orgs_url)
-            if isinstance(orgs_json, list):
-                for o in orgs_json:
-                    orgs.append(
-                        OrgData(
-                            name=o.get("username", ""),
-                            org_id=o.get("id"),
-                            display_name=o.get("full_name"),
-                            avatar_url=o.get("avatar_url"),
-                            url=f"{self.base_url}/{o.get('username')}",
-                            description=o.get("description"),
-                        )
-                    )
-        except Exception as err:
-            _LOGGER.warning("Error fetching Gitea orgs for %s: %s", self.account_name, err)
-
-        # 4. Fetch notifications (if authenticated)
-        notifications: list[NotificationData] = []
-        if self.api_token:
-            try:
-                notif_url = f"{self.base_url}/api/v1/notifications?limit=100"
-                notif_json, _ = await self.async_get_json(notif_url)
-                if isinstance(notif_json, list):
-                    for n in notif_json:
-                        subject = n.get("subject", {})
-                        repo = n.get("repository", {})
-                        notifications.append(
-                            NotificationData(
-                                notification_id=str(n.get("id", "")),
-                                title=subject.get("title", "Notification"),
-                                repository=repo.get("full_name"),
-                                url=subject.get("url") or repo.get("html_url"),
-                                unread=bool(n.get("unread", True)),
-                                updated_at=n.get("updated_at"),
-                                subject_type=subject.get("type"),
-                            )
-                        )
-            except Exception as err:
-                _LOGGER.warning(
-                    "Error fetching Gitea notifications for %s: %s", self.account_name, err
+        for r in await self.async_get_all_pages(url, size_param="limit"):
+            upstream = None
+            if r.get("fork") and r.get("parent"):
+                upstream = r["parent"].get("html_url")
+            repos.append(
+                RepoData(
+                    name=r.get("name", ""),
+                    full_name=r.get("full_name", ""),
+                    url=r.get("html_url", ""),
+                    description=r.get("description"),
+                    is_fork=bool(r.get("fork")),
+                    is_private=bool(r.get("private")),
+                    is_archived=bool(r.get("archived")),
+                    stars=r.get("stars_count", 0),
+                    forks=r.get("forks_count", 0),
+                    watchers=r.get("watchers_count", 0),
+                    open_issues=r.get("open_issues_count", 0),
+                    primary_language=r.get("language"),
+                    default_branch=r.get("default_branch"),
+                    created_at=r.get("created_at"),
+                    updated_at=r.get("updated_at"),
+                    upstream=upstream,
+                    # has_actions exists from Gitea 1.21 / Forgejo 1.21 onwards.
+                    extra={"has_actions": r.get("has_actions")},
                 )
+            )
+        return repos
 
-        profile.public_repos = len(repos)
+    async def _async_fetch_orgs(self) -> list[OrgData]:
+        url = f"{self.base_url}/api/v1/users/{self.account_name}/orgs"
+        return [
+            OrgData(
+                name=o.get("username", ""),
+                org_id=o.get("id"),
+                display_name=o.get("full_name"),
+                avatar_url=o.get("avatar_url"),
+                url=f"{self.base_url}/{o.get('username')}",
+                description=o.get("description"),
+            )
+            for o in await self.async_get_all_pages(url, size_param="limit")
+        ]
+
+    async def _async_fetch_notifications(self) -> list[NotificationData]:
+        url = f"{self.base_url}/api/v1/notifications"
+        notifications: list[NotificationData] = []
+
+        for n in await self.async_get_all_pages(url, size_param="limit"):
+            subject = n.get("subject", {})
+            repo = n.get("repository", {})
+            notifications.append(
+                NotificationData(
+                    notification_id=str(n.get("id", "")),
+                    title=subject.get("title", "Notification"),
+                    repository=repo.get("full_name"),
+                    url=subject.get("url") or repo.get("html_url"),
+                    unread=bool(n.get("unread", True)),
+                    updated_at=n.get("updated_at"),
+                    subject_type=subject.get("type"),
+                )
+            )
+        return notifications
+
+    async def async_fetch(self) -> DevCloudData:
+        """Assemble a snapshot, refreshing only the resources that are due."""
+        profile = await self.async_resource(
+            "profile", self._async_fetch_profile, ProfileData(username=self.account_name)
+        )
+        repos = await self.async_resource("repos", self._async_fetch_repos, [])
+        orgs = await self.async_resource("orgs", self._async_fetch_orgs, [])
+        notifications = await self.async_resource(
+            "notifications", self._async_fetch_notifications, []
+        )
+        running_jobs_count, running_jobs = await self.async_resource(
+            "running_jobs", lambda: self._async_fetch_running_jobs(repos), (None, [])
+        )
 
         return DevCloudData(
             profile=profile,
             orgs=orgs,
             repos=repos,
             notifications=notifications,
+            running_jobs_count=running_jobs_count,
+            running_jobs=running_jobs,
+            scheduling=self.scheduler.diagnostics(),
         )

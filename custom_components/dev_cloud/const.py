@@ -21,6 +21,12 @@ DEFAULT_SCAN_INTERVAL_ANONYMOUS: Final = 1800  # 30 minutes
 DEFAULT_ENABLE_EVENTS: Final = True
 MIN_SCAN_INTERVAL: Final = 60
 
+# Running CI jobs have to be queried per repository on every forge, so the fan-out is capped
+# to the most recently active repositories and the concurrency is bounded to stay well inside
+# API rate limits. Running work virtually always sits on a recently pushed repository.
+RUNNING_JOBS_REPO_LIMIT: Final = 20
+RUNNING_JOBS_CONCURRENCY: Final = 5
+
 # Event names
 EVENT_DEV_CLOUD: Final = "dev_cloud_event"
 EVENT_NEW_REPO: Final = "dev_cloud_new_repo"
@@ -60,9 +66,9 @@ CONF_INSTANCE_PRESET: Final = "instance_preset"
 INSTANCE_CUSTOM: Final = "custom"
 
 GITEA_PRESETS: Final = {
-    "codeberg": {"name": "Codeberg (Forgejo - codeberg.org)", "url": "https://codeberg.org"},
-    "gitea_com": {"name": "Gitea.com (gitea.com)", "url": "https://gitea.com"},
-    "disroot": {"name": "Disroot (git.disroot.org)", "url": "https://git.disroot.org"},
+    "codeberg": {"name": "Codeberg", "url": "https://codeberg.org"},
+    "gitea_com": {"name": "Gitea", "url": "https://gitea.com"},
+    "disroot": {"name": "Disroot", "url": "https://git.disroot.org"},
     INSTANCE_CUSTOM: {"name": "Custom Instance...", "url": ""},
 }
 
@@ -73,5 +79,5 @@ DEFAULT_URLS: Final = {
     PLATFORM_DOCKERHUB: "https://hub.docker.com",
     PLATFORM_NPM: "https://registry.npmjs.org",
     PLATFORM_PYPI: "https://pypi.org",
-    PLATFORM_NUGET: "https://api.nuget.org",
+    PLATFORM_NUGET: "https://azuresearch-usnc.nuget.org",
 }

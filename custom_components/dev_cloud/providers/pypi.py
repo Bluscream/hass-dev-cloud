@@ -50,7 +50,6 @@ class PyPIProvider(BaseDevCloudProvider):
             username=self.account_name,
             display_name=self.account_name,
             profile_url=f"https://pypi.org/user/{self.account_name}/",
-            public_repos=len(packages),
         )
 
         return DevCloudData(

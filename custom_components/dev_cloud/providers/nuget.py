@@ -18,14 +18,39 @@ class NuGetProvider(BaseDevCloudProvider):
     default_base_url = "https://azuresearch-usnc.nuget.org"
     supports_custom_url = False
 
+    SEARCH_URL = "https://azuresearch-usnc.nuget.org"
+
+    def get_headers(self) -> dict[str, str]:
+        """Return headers with X-NuGet-ApiKey if token is provided."""
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "HomeAssistant-DevCloud/1.0",
+        }
+        if self.api_token:
+            headers["X-NuGet-ApiKey"] = self.api_token
+        return headers
+
     async def async_validate(self) -> bool:
-        url = f"{self.base_url}/query?q=owner:{self.account_name}&take=1"
-        data, _ = await self.async_get_json(url, use_etag=False)
-        return isinstance(data, dict) and "data" in data
+        # Check either NuGet search API for packages or public profile page
+        search_url = f"{self.SEARCH_URL}/query?q=owner:{self.account_name}&take=1"
+        try:
+            data, _ = await self.async_get_json(search_url, use_etag=False)
+            if isinstance(data, dict) and "data" in data and data.get("totalHits", 0) > 0:
+                return True
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+        # Fallback to checking public profile page on nuget.org
+        profile_url = f"https://www.nuget.org/profiles/{self.account_name}"
+        async with self.session.get(
+            profile_url, headers={"User-Agent": "HomeAssistant-DevCloud/1.0"}
+        ) as resp:
+            return resp.status == 200
 
     async def async_fetch(self) -> DevCloudData:
         packages: list[PackageData] = []
-        url = f"{self.base_url}/query?q=owner:{self.account_name}&prerelease=true&take=100"
+        search_base = self.base_url if "azuresearch" in self.base_url else self.SEARCH_URL
+        url = f"{search_base}/query?q=owner:{self.account_name}&prerelease=true&take=100"
         total_downloads = 0
         try:
             data, _ = await self.async_get_json(url)
@@ -57,7 +82,6 @@ class NuGetProvider(BaseDevCloudProvider):
             username=self.account_name,
             display_name=self.account_name,
             profile_url=f"https://www.nuget.org/profiles/{self.account_name}",
-            public_repos=len(packages),
             extra={"total_downloads": total_downloads},
         )
 

@@ -150,7 +150,6 @@ class DockerHubProvider(BaseDevCloudProvider):
             profile_url=f"https://hub.docker.com/u/{self.account_name}",
             bio=bio,
             created_at=created_at,
-            public_repos=len(packages),
         )
 
         return DevCloudData(

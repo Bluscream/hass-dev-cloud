@@ -1,4 +1,14 @@
-"""Sensor entities for Developer Cloud Services."""
+"""Sensor entities for Developer Cloud Services.
+
+Sensors deliberately carry *only* aggregated counts and scalar metrics in their state
+attributes. The full detail (repository lists, releases, packages, notifications, running
+jobs, ...) is exported to `/local/dev_cloud/<platform>/<account>.json` by `storage.py`, and
+every entity links to it through its `json_url` attribute. See that module for the why.
+
+Entities are registered purely from what a provider actually returned — there are no
+per-platform hardcoded lists. A sensor with no data behind it is omitted entirely rather
+than reporting a misleading zero.
+"""
 
 from __future__ import annotations
 
@@ -13,11 +23,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from . import DevCloudConfigEntry
-from .const import PLATFORM_DOCKERHUB, PLATFORM_ICONS
+from .const import PLATFORM_ICONS
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
-
-FORGE_PLATFORMS = ("github", "gitlab", "gitea")
 
 
 async def async_setup_entry(
@@ -27,51 +35,65 @@ async def async_setup_entry(
 ) -> None:
     """Set up DevCloud sensor platform."""
     coordinator = entry.runtime_data
-    entities: list[SensorEntity] = [
-        DevCloudProfileSensor(coordinator),
-        DevCloudRepositoriesSensor(coordinator),
-    ]
+    entities: list[SensorEntity] = [DevCloudProfileSensor(coordinator)]
 
-    # Add Org sensor if platform supports or has orgs
-    has_orgs = bool(coordinator.data and coordinator.data.orgs)
-    if has_orgs or coordinator.platform_id in FORGE_PLATFORMS:
+    data = coordinator.data
+    if data is None:
+        async_add_entities(entities)
+        return
+
+    repos = data.repos
+    packages = data.packages
+
+    if repos:
+        entities.append(DevCloudRepositoriesSensor(coordinator))
+
+    if data.orgs:
         entities.append(DevCloudOrganizationsSensor(coordinator))
 
-    # Add Pastes/Gists sensor if platform supports or has pastes
-    has_pastes = bool(coordinator.data and coordinator.data.pastes)
-    if has_pastes or coordinator.platform_id in ("github", "gitlab"):
+    if data.pastes:
         entities.append(DevCloudPastesSensor(coordinator))
 
-    # Add Notifications sensor if platform supports or has notifications
-    if coordinator.platform_id in FORGE_PLATFORMS:
+    if data.notifications:
         entities.append(DevCloudNotificationsSensor(coordinator))
 
-    # Add Open Issues, PRs, Stars, Watchers, Forks sensors for forge platforms
-    if coordinator.platform_id in FORGE_PLATFORMS:
+    if data.open_issues or any(r.open_issues for r in repos):
         entities.append(DevCloudOpenIssuesSensor(coordinator))
+
+    if data.open_prs:
         entities.append(DevCloudOpenPullRequestsSensor(coordinator))
+
+    if any(r.stars for r in repos) or any(p.star_count for p in packages):
         entities.append(DevCloudStarsSensor(coordinator))
+
+    if any(r.watchers for r in repos):
         entities.append(DevCloudWatchersSensor(coordinator))
+
+    if any(r.forks for r in repos):
         entities.append(DevCloudForksSensor(coordinator))
-    elif coordinator.platform_id == PLATFORM_DOCKERHUB:
-        # Docker Hub provides total stars and total pulls across repositories/images
-        entities.append(DevCloudStarsSensor(coordinator))
+
+    if data.releases:
+        entities.extend(
+            (
+                DevCloudReleasesSensor(coordinator),
+                DevCloudReleaseAssetsSensor(coordinator),
+                DevCloudDownloadsSensor(coordinator),
+            )
+        )
+
+    if any(p.pull_count for p in packages) or any(
+        isinstance(r.extra, dict) and r.extra.get("pull_count") for r in repos
+    ):
         entities.append(DevCloudPullsSensor(coordinator))
 
-    # Add Sponsors sensor only if platform supports sponsors or has sponsors data
-    has_sponsors_data = bool(
-        coordinator.data
-        and (
-            coordinator.data.sponsors_count is not None
-            or coordinator.data.sponsoring_count is not None
-        )
-    )
-    if getattr(coordinator.provider, "supports_sponsors", False) or has_sponsors_data:
+    if data.sponsors_count is not None or data.sponsoring_count is not None:
         entities.append(DevCloudSponsorsSensor(coordinator))
 
-    # Add Packages sensor if platform has packages
-    if coordinator.data and coordinator.data.packages:
+    if packages:
         entities.append(DevCloudPackagesSensor(coordinator))
+
+    if data.running_jobs_count is not None:
+        entities.append(DevCloudRunningJobsSensor(coordinator))
 
     async_add_entities(entities)
 
@@ -123,11 +145,11 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             "rate_limit_reset": data.rate_limit_reset,
         }
         attrs.update(prof.extra)
-        return {k: v for k, v in attrs.items() if v is not None}
+        return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
-    """Repositories sensor with count as state and details dictionary as attributes."""
+    """Repositories sensor with count as state and aggregate totals as attributes."""
 
     _attr_icon = "mdi:source-repository-multiple"
     _attr_state_class = SensorStateClass.TOTAL
@@ -142,9 +164,6 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        prof = self.coordinator.data.profile
-        if prof.public_repos is not None:
-            return prof.public_repos + (prof.private_repos or 0)
         return len(self.coordinator.data.repos)
 
     @property
@@ -152,43 +171,19 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
         repos = self.coordinator.data.repos
-        total_stars = sum(r.stars for r in repos)
-        total_forks = sum(r.forks for r in repos)
-        total_watchers = sum(r.watchers for r in repos)
-
-        repo_list = [
-            {
-                "name": r.name,
-                "full_name": r.full_name,
-                "url": r.url,
-                "description": r.description,
-                "stars": r.stars,
-                "forks": r.forks,
-                "watchers": r.watchers,
-                "is_fork": r.is_fork,
-                "is_private": r.is_private,
-                "language": r.primary_language,
-                "upstream": r.upstream,
-                "updated_at": r.updated_at,
-            }
-            for r in repos[:25]
-        ]
-
-        prof = self.coordinator.data.profile
         attrs = {
             "total_repositories": self.native_value,
-            "public_repositories": prof.public_repos,
-            "private_repositories": prof.private_repos,
-            "total_stars": total_stars,
-            "total_forks": total_forks,
-            "total_watchers": total_watchers,
-            "repositories": repo_list,
+            "public_repositories": sum(1 for r in repos if not r.is_private),
+            "private_repositories": sum(1 for r in repos if r.is_private),
+            "total_stars": sum(r.stars for r in repos),
+            "total_forks": sum(r.forks for r in repos),
+            "total_watchers": sum(r.watchers for r in repos),
         }
-        return {k: v for k, v in attrs.items() if v is not None}
+        return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudOrganizationsSensor(DevCloudBaseEntity, SensorEntity):
-    """Organizations sensor showing count as state and org mapping in attributes."""
+    """Organizations sensor showing the membership count."""
 
     _attr_icon = "mdi:domain"
     _attr_state_class = SensorStateClass.TOTAL
@@ -209,24 +204,13 @@ class DevCloudOrganizationsSensor(DevCloudBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        orgs = self.coordinator.data.orgs
-        return {
-            "total_organizations": len(orgs),
-            "organizations": [
-                {
-                    "name": o.name,
-                    "display_name": o.display_name,
-                    "url": o.url,
-                    "avatar_url": o.avatar_url,
-                    "description": o.description,
-                }
-                for o in orgs
-            ],
+        return super().extra_state_attributes | {
+            "total_organizations": len(self.coordinator.data.orgs),
         }
 
 
 class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
-    """Pastes/gists sensor with count as state and paste items in attributes."""
+    """Pastes/gists sensor with the paste count as state."""
 
     _attr_icon = "mdi:code-braces"
     _attr_state_class = SensorStateClass.TOTAL
@@ -246,11 +230,6 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        prof = self.coordinator.data.profile
-        if prof.total_gists is not None:
-            return prof.total_gists
-        if prof.public_gists is not None:
-            return prof.public_gists
         return len(self.coordinator.data.pastes)
 
     @property
@@ -258,24 +237,12 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
         pastes = self.coordinator.data.pastes
-        prof = self.coordinator.data.profile
         attrs = {
             "total_pastes": self.native_value,
-            "public_pastes": prof.public_gists,
-            "private_pastes": prof.private_gists,
-            "pastes": [
-                {
-                    "id": p.paste_id,
-                    "title": p.title,
-                    "url": p.url,
-                    "is_public": p.is_public,
-                    "files_count": p.files_count,
-                    "updated_at": p.updated_at,
-                }
-                for p in pastes[:25]
-            ],
+            "public_pastes": sum(1 for p in pastes if p.is_public),
+            "private_pastes": sum(1 for p in pastes if not p.is_public),
         }
-        return {k: v for k, v in attrs.items() if v is not None}
+        return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
@@ -304,31 +271,17 @@ class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
         total_downloads = sum(p.downloads_total or 0 for p in packages)
         total_pulls = sum(p.pull_count or 0 for p in packages)
 
-        attrs: dict[str, Any] = {
-            "total_packages": len(packages),
-            "packages": [
-                {
-                    "name": p.name,
-                    "version": p.version,
-                    "url": p.url,
-                    "description": p.description,
-                    "downloads": p.downloads_total,
-                    "pulls": p.pull_count,
-                    "updated_at": p.updated_at,
-                }
-                for p in packages
-            ],
-        }
+        attrs: dict[str, Any] = {"total_packages": len(packages)}
         if total_downloads > 0:
             attrs["total_downloads"] = total_downloads
         if total_pulls > 0:
             attrs["total_pulls"] = total_pulls
 
-        return attrs
+        return super().extra_state_attributes | attrs
 
 
 class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
-    """Notifications sensor with unread count as state and notifications map in attributes."""
+    """Notifications sensor with the unread count as state."""
 
     _attr_icon = "mdi:bell"
     _attr_state_class = SensorStateClass.TOTAL
@@ -350,23 +303,9 @@ class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
         notifications = self.coordinator.data.notifications
-        unread_count = sum(1 for n in notifications if n.unread)
-        return {
+        return super().extra_state_attributes | {
             "total_notifications": len(notifications),
-            "unread_notifications": unread_count,
-            "notifications": [
-                {
-                    "id": n.notification_id,
-                    "title": n.title,
-                    "reason": n.reason,
-                    "repository": n.repository,
-                    "url": n.url,
-                    "unread": n.unread,
-                    "subject_type": n.subject_type,
-                    "updated_at": n.updated_at,
-                }
-                for n in notifications
-            ],
+            "unread_notifications": sum(1 for n in notifications if n.unread),
         }
 
 
@@ -386,19 +325,17 @@ class DevCloudOpenIssuesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        if self.coordinator.data.open_issues_count is not None:
-            return self.coordinator.data.open_issues_count
-        # Fallback to summing up open_issues in repos list
-        return sum(r.open_issues for r in self.coordinator.data.repos)
+        data = self.coordinator.data
+        if data.open_issues:
+            return len(data.open_issues)
+        # Platforms without an issue search still report per-repository counts.
+        return sum(r.open_issues for r in data.repos)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        return {
-            "total_open_issues": self.native_value,
-            "issues": self.coordinator.data.open_issues,
-        }
+        return super().extra_state_attributes | {"total_open_issues": self.native_value}
 
 
 class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
@@ -417,16 +354,13 @@ class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return self.coordinator.data.open_prs_count or 0
+        return len(self.coordinator.data.open_prs)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        return {
-            "total_open_prs": self.native_value,
-            "pull_requests": self.coordinator.data.open_prs,
-        }
+        return super().extra_state_attributes | {"total_open_prs": self.native_value}
 
 
 class DevCloudStarsSensor(DevCloudBaseEntity, SensorEntity):
@@ -512,6 +446,79 @@ class DevCloudPullsSensor(DevCloudBaseEntity, SensorEntity):
         return max(packages_pulls, repos_pulls)
 
 
+class DevCloudReleasesSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for total releases count."""
+
+    _attr_icon = "mdi:tag-multiple"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "releases"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "releases")
+        self._attr_name = "Releases"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return len(self.coordinator.data.releases)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self.coordinator.data:
+            return {}
+        return super().extra_state_attributes | {"total_releases": self.native_value}
+
+
+class DevCloudReleaseAssetsSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for total release assets count."""
+
+    _attr_icon = "mdi:attachment"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "assets"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "release_assets")
+        self._attr_name = "Assets"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return sum(len(r.get("assets", ())) for r in self.coordinator.data.releases)
+
+
+class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for total downloads across all release assets."""
+
+    _attr_icon = "mdi:download"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "downloads"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "downloads")
+        self._attr_name = "Downloads"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return sum(
+            asset.get("downloads", 0)
+            for release in self.coordinator.data.releases
+            for asset in release.get("assets", ())
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self.coordinator.data:
+            return {}
+        return super().extra_state_attributes | {"total_downloads": self.native_value}
+
+
 class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for active sponsors count."""
 
@@ -539,4 +546,30 @@ class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):
             "sponsors": data.sponsors_count,
             "sponsoring": data.sponsoring_count,
         }
-        return {k: v for k, v in attrs.items() if v is not None}
+        return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
+
+
+class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for currently running CI workflows / pipelines."""
+
+    _attr_icon = "mdi:play-circle-outline"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "jobs"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "running_jobs")
+        self._attr_name = "Running Jobs"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.running_jobs_count or 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return super().extra_state_attributes | {
+            "platform": self.coordinator.platform_id,
+            "account": self.coordinator.account_name,
+        }

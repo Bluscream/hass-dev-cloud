@@ -2,15 +2,68 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from aiohttp import ClientSession
 
 from ..models import DevCloudData
+from .scheduling import PageWalker, ResourcePolicy, ResourceScheduler
 
 _LOGGER = logging.getLogger(__name__)
+
+# Safety valve so a misbehaving endpoint that always returns a full page cannot loop forever.
+# At 100 items per page this allows 10k items per collection.
+MAX_PAGES = 100
+
+
+async def async_map_limited[T, R](
+    items: Sequence[T],
+    worker: Callable[[T], Awaitable[R]],
+    limit: int,
+) -> list[R | BaseException]:
+    """Run ``worker`` over ``items`` with bounded concurrency, collecting exceptions."""
+    semaphore = asyncio.Semaphore(limit)
+
+    async def _run(item: T) -> R:
+        async with semaphore:
+            return await worker(item)
+
+    return await asyncio.gather(*(_run(item) for item in items), return_exceptions=True)
+
+
+async def async_collect_running_jobs[T](
+    items: Sequence[T],
+    worker: Callable[[T], Awaitable[list[dict[str, Any]]]],
+    limit: int,
+) -> tuple[int | None, list[dict[str, Any]]]:
+    """Aggregate per-repository running-job queries into a count and a flat list.
+
+    Returns ``(None, [])`` when no query produced a usable answer — no candidate
+    repositories, an unsupported endpoint, or missing credentials. Callers propagate that
+    ``None`` so the Running Jobs sensor is omitted entirely instead of reporting a
+    misleading zero.
+    """
+    if not items:
+        return None, []
+
+    results = await async_map_limited(items, worker, limit)
+
+    jobs: list[dict[str, Any]] = []
+    any_succeeded = False
+    for result in results:
+        if isinstance(result, BaseException):
+            _LOGGER.debug("Running jobs query failed: %s", result)
+            continue
+        any_succeeded = True
+        jobs.extend(result)
+
+    if not any_succeeded:
+        return None, []
+    return len(jobs), jobs
 
 
 class DevCloudProviderError(Exception):
@@ -36,7 +89,10 @@ class BaseDevCloudProvider(ABC):
     default_base_url: str = ""
     supports_custom_url: bool = False
     requires_auth: bool = False
-    supports_sponsors: bool = False
+
+    #: How often each resource may be refreshed, declared by the subclass. Resources absent
+    #: from this mapping are refreshed on every poll. See `scheduling.ResourceScheduler`.
+    resource_policies: dict[str, ResourcePolicy] = {}
 
     def __init__(
         self,
@@ -49,9 +105,55 @@ class BaseDevCloudProvider(ABC):
         self.account_name = account_name.strip()
         self.base_url = (base_url or self.default_base_url).rstrip("/")
         self.api_token = api_token.strip() if api_token else None
-        # In-memory conditional request caching
+        # In-memory conditional request caching & TTL caching
         self._etags: dict[str, str] = {}
         self._cached_responses: dict[str, Any] = {}
+
+        self.scheduler = ResourceScheduler(
+            policies=dict(self.resource_policies), has_token=bool(self.api_token)
+        )
+        # Every HTTP call increments this, so a resource's real cost can be measured rather
+        # than guessed.
+        self.request_count = 0
+        self._resource_values: dict[str, Any] = {}
+
+    async def async_resource[T](
+        self,
+        key: str,
+        fetcher: Callable[[], Awaitable[T]],
+        default: T,
+    ) -> T:
+        """Refresh `key` if its schedule allows, otherwise reuse the last known value.
+
+        Failures are logged and fall back to the previous value too, so one flaky endpoint
+        cannot empty a list that was previously complete.
+        """
+        if not self.scheduler.should_fetch(key):
+            return self._resource_values.get(key, default)
+
+        before = self.request_count
+        try:
+            value = await fetcher()
+        except DevCloudNotFoundError as err:
+            # A 404 here means the endpoint does not exist on this instance or the token
+            # lacks the scope — a permanent condition, not an incident. Debug, not warning.
+            _LOGGER.debug(
+                "Resource %s unavailable for %s:%s: %s",
+                key,
+                self.platform_id,
+                self.account_name,
+                err,
+            )
+            return self._resource_values.get(key, default)
+        except Exception as err:
+            _LOGGER.warning(
+                "Error fetching %s for %s:%s: %s", key, self.platform_id, self.account_name, err
+            )
+            return self._resource_values.get(key, default)
+
+        self.scheduler.record_fetch(key, self.request_count - before)
+        self._resource_values[key] = value
+        return value
 
     def get_headers(self) -> dict[str, str]:
         """Return default headers."""
@@ -77,6 +179,7 @@ class BaseDevCloudProvider(ABC):
         if use_etag and endpoint_url in self._etags:
             req_headers["If-None-Match"] = self._etags[endpoint_url]
 
+        self.request_count += 1
         async with self.session.get(endpoint_url, headers=req_headers) as response:
             resp_headers = dict(response.headers)
             if response.status == 304:
@@ -106,6 +209,48 @@ class BaseDevCloudProvider(ABC):
                 self._cached_responses[endpoint_url] = data
 
             return data, resp_headers
+
+    async def async_get_all_pages(
+        self,
+        url: str,
+        page_size: int = 100,
+        page_param: str = "page",
+        size_param: str = "per_page",
+        first_page: int = 1,
+        extract: Callable[[Any], list[Any]] | None = None,
+    ) -> list[Any]:
+        """Follow classic ``page``/``per_page`` pagination until the API runs out of items.
+
+        Stops on a short page, an empty page, or ``MAX_PAGES`` — never on a fixed item
+        count, so the returned list is everything the endpoint will give us. Lists in the
+        JSON dump must be complete, because every count is derived from them.
+
+        ``extract`` pulls the item list out of an envelope response (Docker Hub's
+        ``{"results": [...]}``); omit it for endpoints that return a bare array.
+        """
+        separator = "&" if "?" in url else "?"
+        walker = PageWalker(url, page_size)
+        items: list[Any] = []
+
+        for page in range(first_page, first_page + MAX_PAGES):
+            page_url = f"{url}{separator}{size_param}={page_size}&{page_param}={page}"
+            payload, _ = await self.async_get_json(page_url, use_etag=False)
+
+            batch = extract(payload) if extract else payload
+            if not isinstance(batch, list) or not walker.accept(batch):
+                break
+
+            items.extend(batch)
+            if walker.is_last(batch):
+                break
+        else:
+            _LOGGER.warning(
+                "Pagination for %s stopped at the %d page safety limit; list may be incomplete",
+                url,
+                MAX_PAGES,
+            )
+
+        return items
 
     @abstractmethod
     async def async_fetch(self) -> DevCloudData:

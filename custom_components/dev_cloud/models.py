@@ -21,13 +21,11 @@ class ProfileData:
     blog: str | None = None
     email: str | None = None
     created_at: str | None = None
+    # followers/following have no companion list, so they stay as reported by the API.
+    # Repo and paste totals deliberately do *not* live here: the repos/pastes lists are
+    # fetched in full, so any count would just be a second copy of len().
     followers: int | None = None
     following: int | None = None
-    public_repos: int | None = None
-    public_gists: int | None = None
-    private_repos: int | None = None
-    private_gists: int | None = None
-    total_gists: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -41,7 +39,6 @@ class OrgData:
     avatar_url: str | None = None
     url: str | None = None
     description: str | None = None
-    repos_count: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -124,13 +121,22 @@ class DevCloudData:
     pastes: list[PasteData] = field(default_factory=list)
     packages: list[PackageData] = field(default_factory=list)
     notifications: list[NotificationData] = field(default_factory=list)
-    open_issues_count: int | None = None
-    open_prs_count: int | None = None
     open_issues: list[dict[str, Any]] = field(default_factory=list)
     open_prs: list[dict[str, Any]] = field(default_factory=list)
+    # Sponsorships expose only totals over the API, so there is no list to count.
     sponsors_count: int | None = None
     sponsoring_count: int | None = None
+    # Kept off the JSON dump (see storage.py) but needed in-process: None means the platform
+    # has no CI or no token, which len(running_jobs) cannot distinguish from "none running".
+    running_jobs_count: int | None = None
+    running_jobs: list[dict[str, Any]] = field(default_factory=list)
+    # Each release carries its own `assets` list, so release, asset, and download totals are
+    # all derived from this one structure rather than stored alongside it.
+    releases: list[dict[str, Any]] = field(default_factory=list)
     rate_limit_remaining: int | None = None
     rate_limit_reset: int | None = None
+    # Per-resource polling state (effective interval, measured request cost, age), so the
+    # adaptive scheduler's decisions are visible rather than opaque.
+    scheduling: dict[str, Any] = field(default_factory=dict)
     raw_status: str = "ok"
     error: str | None = None

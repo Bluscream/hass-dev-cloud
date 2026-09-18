@@ -26,6 +26,7 @@ from .const import (
 )
 from .models import DevCloudData
 from .providers import DevCloudProviderError, get_provider
+from .storage import async_dump_dev_cloud_json, build_json_url
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,6 +58,10 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
             instance_url=self.instance_url,
             api_token=self.api_token,
         )
+
+        # Public URL of this account's full JSON snapshot, exposed on every sensor so the
+        # bulky lists stripped from state attributes stay reachable.
+        self.json_url: str = build_json_url(self.platform_id, self.account_name)
 
         self._previous_repos: set[str] = set()
         self._previous_packages: set[str] = set()
@@ -105,5 +110,8 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
 
         self._previous_repos = {r.full_name or r.name for r in data.repos}
         self._previous_packages = {p.name for p in data.packages}
+
+        # Export the complete snapshot to /config/www so sensors only need to carry counts.
+        await async_dump_dev_cloud_json(self.hass, self.platform_id, self.account_name, data)
 
         return data

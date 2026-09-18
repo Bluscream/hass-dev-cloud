@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from ..const import PLATFORM_NPM
-from ..models import DevCloudData, PackageData, ProfileData
+from ..models import DevCloudData, OrgData, PackageData, ProfileData
 from .base import BaseDevCloudProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -54,15 +54,44 @@ class NPMProvider(BaseDevCloudProvider):
         except Exception as err:
             _LOGGER.warning("Error fetching NPM packages for %s: %s", self.account_name, err)
 
+        # 2. Fetch Organizations (org memberships / teams)
+        orgs: list[OrgData] = []
+        orgs_url = f"{self.base_url}/-/org/{self.account_name}/user"
+        try:
+            # First try with default headers
+            try:
+                org_json, _ = await self.async_get_json(orgs_url)
+            except Exception:
+                # Fallback to anonymous query if token lacks org scope (403)
+                anon_headers = {
+                    "User-Agent": "HomeAssistant-DevCloud/1.0",
+                    "Accept": "application/json",
+                    "Authorization": "",
+                }
+                org_json, _ = await self.async_get_json(orgs_url, headers=anon_headers)
+
+            if isinstance(org_json, dict):
+                for org_name, role in org_json.items():
+                    orgs.append(
+                        OrgData(
+                            name=org_name,
+                            display_name=org_name,
+                            url=f"https://www.npmjs.com/org/{org_name}",
+                            description=f"Role: {role}",
+                        )
+                    )
+        except Exception as err:
+            _LOGGER.debug("Could not fetch NPM orgs for %s: %s", self.account_name, err)
+
         profile = ProfileData(
             username=self.account_name,
             display_name=self.account_name,
             profile_url=f"https://www.npmjs.com/~{self.account_name}",
             avatar_url=f"https://avatars.githubusercontent.com/{self.account_name}",
-            public_repos=len(packages),
         )
 
         return DevCloudData(
             profile=profile,
             packages=packages,
+            orgs=orgs,
         )
