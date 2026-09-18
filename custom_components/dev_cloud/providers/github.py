@@ -1,24 +1,49 @@
-"""GitHub provider implementation."""
+"""GitHub provider implementation using aiogithubapi."""
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from typing import Any
 
+from aiogithubapi import (
+    GitHubAPI,
+    GitHubAuthenticationException,
+    GitHubRatelimitException,
+)
+from aiohttp import ClientSession
+
 from ..const import PLATFORM_GITHUB
 from ..models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
-from .base import BaseDevCloudProvider
+from .base import (
+    BaseDevCloudProvider,
+    DevCloudAuthError,
+    DevCloudNotFoundError,
+    DevCloudRateLimitError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class GitHubProvider(BaseDevCloudProvider):
-    """Provider for GitHub."""
+    """Provider for GitHub using aiogithubapi."""
 
     platform_id = PLATFORM_GITHUB
     default_base_url = "https://api.github.com"
     supports_custom_url = False
+
+    def __init__(
+        self,
+        session: ClientSession,
+        account_name: str,
+        base_url: str | None = None,
+        api_token: str | None = None,
+    ) -> None:
+        super().__init__(session, account_name, base_url, api_token)
+        self._api = GitHubAPI(
+            token=self.api_token,
+            session=self.session,
+            **{"client_name": "HomeAssistant-DevCloud/1.0"},
+        )
 
     def get_headers(self) -> dict[str, str]:
         headers = super().get_headers()
@@ -29,98 +54,112 @@ class GitHubProvider(BaseDevCloudProvider):
         return headers
 
     async def async_validate(self) -> bool:
-        url = f"{self.base_url}/users/{self.account_name}"
-        data, _ = await self.async_get_json(url, use_etag=False)
-        return bool(data and data.get("login"))
+        try:
+            user_resp = await self._api.users.get(self.account_name)
+            return bool(user_resp.data and user_resp.data.login)
+        except GitHubAuthenticationException as err:
+            raise DevCloudAuthError("Invalid GitHub credentials") from err
+        except GitHubRatelimitException as err:
+            raise DevCloudRateLimitError("GitHub rate limit reached") from err
+        except Exception as err:
+            raise DevCloudNotFoundError(f"GitHub user {self.account_name} not found") from err
 
     async def async_fetch(self) -> DevCloudData:
         # 1. Fetch user profile
-        user_url = f"{self.base_url}/users/{self.account_name}"
-        user_json, headers = await self.async_get_json(user_url)
+        rate_limit_remaining: int | None = None
+        rate_limit_reset: int | None = None
 
-        rate_limit_remaining = None
-        rate_limit_reset = None
-        if "X-RateLimit-Remaining" in headers:
-            with contextlib.suppress(ValueError):
-                rate_limit_remaining = int(headers["X-RateLimit-Remaining"])
-        if "X-RateLimit-Reset" in headers:
-            with contextlib.suppress(ValueError):
-                rate_limit_reset = int(headers["X-RateLimit-Reset"])
+        user_resp = await self._api.users.get(self.account_name)
+        user = user_resp.data
+        if user_resp.headers.x_ratelimit_remaining is not None:
+            with contextlib_suppress():
+                rate_limit_remaining = int(user_resp.headers.x_ratelimit_remaining)
+        if user_resp.headers.x_ratelimit_reset is not None:
+            with contextlib_suppress():
+                rate_limit_reset = int(user_resp.headers.x_ratelimit_reset)
 
         profile = ProfileData(
-            username=user_json.get("login", self.account_name),
-            display_name=user_json.get("name"),
-            user_id=user_json.get("id"),
-            avatar_url=user_json.get("avatar_url"),
-            profile_url=user_json.get("html_url"),
-            bio=user_json.get("bio"),
-            location=user_json.get("location"),
-            company=user_json.get("company"),
-            blog=user_json.get("blog"),
-            email=user_json.get("email"),
-            created_at=user_json.get("created_at"),
-            followers=user_json.get("followers"),
-            following=user_json.get("following"),
-            public_repos=user_json.get("public_repos"),
-            public_gists=user_json.get("public_gists"),
+            username=user.login or self.account_name,
+            display_name=user.name,
+            user_id=user.id,
+            avatar_url=user.avatar_url,
+            profile_url=user.html_url,
+            bio=user.bio,
+            location=user.location,
+            company=user.company,
+            blog=user.blog,
+            email=user.email,
+            created_at=user.created_at,
+            followers=user.followers,
+            following=user.following,
+            public_repos=user.public_repos,
+            public_gists=user.public_gists,
         )
 
         # 2. Fetch repos
         repos: list[RepoData] = []
         try:
-            repos_url = f"{self.base_url}/users/{self.account_name}/repos?per_page=100&sort=updated"
-            repos_json, _ = await self.async_get_json(repos_url)
-            if isinstance(repos_json, list):
-                for r in repos_json:
-                    repos.append(
-                        RepoData(
-                            name=r.get("name", ""),
-                            full_name=r.get("full_name", ""),
-                            url=r.get("html_url", ""),
-                            description=r.get("description"),
-                            is_fork=bool(r.get("fork")),
-                            is_private=bool(r.get("private")),
-                            is_archived=bool(r.get("archived")),
-                            stars=r.get("stargazers_count", 0),
-                            forks=r.get("forks_count", 0),
-                            watchers=r.get("watchers_count", 0),
-                            open_issues=r.get("open_issues_count", 0),
-                            primary_language=r.get("language"),
-                            default_branch=r.get("default_branch"),
-                            created_at=r.get("created_at"),
-                            updated_at=r.get("updated_at"),
-                            pushed_at=r.get("pushed_at"),
-                        )
+            repos_resp = (
+                await self._api.user.repos(params={"per_page": 100, "sort": "updated"})
+                if self.api_token
+                else await self._api.users.repos(
+                    self.account_name, params={"per_page": 100, "sort": "updated"}
+                )
+            )
+            for r in repos_resp.data:
+                repos.append(
+                    RepoData(
+                        name=r.name or "",
+                        full_name=r.full_name or "",
+                        url=r.html_url or "",
+                        description=r.description,
+                        is_fork=bool(r.fork),
+                        is_private=bool(r.private),
+                        is_archived=bool(r.archived),
+                        stars=r.stargazers_count or 0,
+                        forks=r.forks_count or 0,
+                        watchers=r.watchers_count or 0,
+                        open_issues=r.open_issues_count or 0,
+                        primary_language=r.language,
+                        default_branch=r.default_branch,
+                        created_at=r.created_at,
+                        updated_at=r.updated_at,
+                        pushed_at=r.pushed_at,
                     )
+                )
         except Exception as err:
             _LOGGER.warning("Error fetching GitHub repos for %s: %s", self.account_name, err)
 
         # 3. Fetch orgs
+        # If authenticated, use api.user.orgs() to fetch all memberships (including private/hidden)
+        # If unauthenticated, use api.users.orgs(username) for public org memberships
         orgs: list[OrgData] = []
         try:
-            orgs_url = f"{self.base_url}/users/{self.account_name}/orgs?per_page=100"
-            orgs_json, _ = await self.async_get_json(orgs_url)
-            if isinstance(orgs_json, list):
-                for o in orgs_json:
-                    orgs.append(
-                        OrgData(
-                            name=o.get("login", ""),
-                            org_id=o.get("id"),
-                            avatar_url=o.get("avatar_url"),
-                            url=f"https://github.com/{o.get('login')}",
-                            description=o.get("description"),
-                        )
+            if self.api_token:
+                orgs_resp = await self._api.user.orgs(params={"per_page": 100})
+            else:
+                orgs_resp = await self._api.users.orgs(self.account_name, params={"per_page": 100})
+            for o in orgs_resp.data:
+                orgs.append(
+                    OrgData(
+                        name=o.login or "",
+                        org_id=o.id,
+                        avatar_url=o.avatar_url,
+                        url=f"https://github.com/{o.login}",
+                        description=o.description,
                     )
+                )
         except Exception as err:
             _LOGGER.warning("Error fetching GitHub orgs for %s: %s", self.account_name, err)
 
         # 4. Fetch gists
         pastes: list[PasteData] = []
         try:
-            gists_url = f"{self.base_url}/users/{self.account_name}/gists?per_page=100"
-            gists_json, _ = await self.async_get_json(gists_url)
-            if isinstance(gists_json, list):
-                for g in gists_json:
+            gists_resp = await self._api.generic(
+                f"/users/{self.account_name}/gists", params={"per_page": 100}
+            )
+            if isinstance(gists_resp.data, list):
+                for g in gists_resp.data:
                     files = g.get("files", {})
                     first_file = next(iter(files.keys())) if files else None
                     pastes.append(
@@ -142,24 +181,24 @@ class GitHubProvider(BaseDevCloudProvider):
         notifications: list[NotificationData] = []
         if self.api_token:
             try:
-                notif_url = f"{self.base_url}/notifications?per_page=100"
-                notif_json, _ = await self.async_get_json(notif_url)
-                if isinstance(notif_json, list):
-                    for n in notif_json:
-                        subject = n.get("subject", {})
-                        repo = n.get("repository", {})
-                        notifications.append(
-                            NotificationData(
-                                notification_id=str(n.get("id", "")),
-                                title=subject.get("title", "Notification"),
-                                reason=n.get("reason"),
-                                repository=repo.get("full_name"),
-                                url=subject.get("html_url") or repo.get("html_url"),
-                                unread=bool(n.get("unread", True)),
-                                updated_at=n.get("updated_at"),
-                                subject_type=subject.get("type"),
-                            )
+                notifs_resp = await self._api.notifications.list(per_page=100)
+                for n in notifs_resp.data:
+                    subject = getattr(n, "subject", {}) or {}
+                    repo = getattr(n, "repository", {}) or {}
+                    subj_dict = subject if isinstance(subject, dict) else subject.as_dict
+                    repo_dict = repo if isinstance(repo, dict) else repo.as_dict
+                    notifications.append(
+                        NotificationData(
+                            notification_id=str(n.id),
+                            title=subj_dict.get("title", "Notification"),
+                            reason=n.reason,
+                            repository=repo_dict.get("full_name"),
+                            url=subj_dict.get("html_url") or repo_dict.get("html_url"),
+                            unread=bool(n.unread),
+                            updated_at=n.updated_at,
+                            subject_type=subj_dict.get("type"),
                         )
+                    )
             except Exception as err:
                 _LOGGER.warning(
                     "Error fetching GitHub notifications for %s: %s", self.account_name, err
@@ -172,15 +211,17 @@ class GitHubProvider(BaseDevCloudProvider):
         open_prs: list[dict[str, Any]] = []
 
         try:
-            # Open Issues in repos owned by user
-            issues_search_url = (
-                f"{self.base_url}/search/issues"
-                f"?q=user:{self.account_name}+type:issue+state:open&per_page=50&sort=updated"
+            issues_resp = await self._api.generic(
+                "/search/issues",
+                params={
+                    "q": f"user:{self.account_name} type:issue state:open",
+                    "per_page": 50,
+                    "sort": "updated",
+                },
             )
-            issues_json, _ = await self.async_get_json(issues_search_url)
-            if isinstance(issues_json, dict) and "total_count" in issues_json:
-                open_issues_count = issues_json.get("total_count", 0)
-                for item in issues_json.get("items", []):
+            if isinstance(issues_resp.data, dict) and "total_count" in issues_resp.data:
+                open_issues_count = issues_resp.data.get("total_count", 0)
+                for item in issues_resp.data.get("items", []):
                     open_issues.append(
                         {
                             "id": item.get("id"),
@@ -198,15 +239,17 @@ class GitHubProvider(BaseDevCloudProvider):
             _LOGGER.warning("Error fetching GitHub open issues for %s: %s", self.account_name, err)
 
         try:
-            # Open Pull Requests in repos owned by user
-            prs_search_url = (
-                f"{self.base_url}/search/issues"
-                f"?q=user:{self.account_name}+type:pr+state:open&per_page=50&sort=updated"
+            prs_resp = await self._api.generic(
+                "/search/issues",
+                params={
+                    "q": f"user:{self.account_name} type:pr state:open",
+                    "per_page": 50,
+                    "sort": "updated",
+                },
             )
-            prs_json, _ = await self.async_get_json(prs_search_url)
-            if isinstance(prs_json, dict) and "total_count" in prs_json:
-                open_prs_count = prs_json.get("total_count", 0)
-                for item in prs_json.get("items", []):
+            if isinstance(prs_resp.data, dict) and "total_count" in prs_resp.data:
+                open_prs_count = prs_resp.data.get("total_count", 0)
+                for item in prs_resp.data.get("items", []):
                     open_prs.append(
                         {
                             "id": item.get("id"),
@@ -236,3 +279,10 @@ class GitHubProvider(BaseDevCloudProvider):
             rate_limit_remaining=rate_limit_remaining,
             rate_limit_reset=rate_limit_reset,
         )
+
+
+def contextlib_suppress():
+    """Helper for suppressing ValueError."""
+    import contextlib
+
+    return contextlib.suppress(ValueError)
