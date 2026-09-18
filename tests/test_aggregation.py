@@ -118,3 +118,56 @@ def test_a_reported_total_never_coexists_with_the_list_it_describes() -> None:
     assert not (payload.get("repos") and payload.get("totals", {}).get("repos")), (
         "a total and its list must not both be published"
     )
+
+
+def _repo_with_issues(full_name: str, issues: int, prs: int) -> RepoData:
+    repo = _repo(full_name)
+    repo.issues = [{"number": i} for i in range(issues)]
+    repo.prs = [{"number": i} for i in range(prs)]
+    return repo
+
+
+def test_issue_and_pr_totals_are_summed_from_the_repositories() -> None:
+    data = DevCloudData(
+        profile=ProfileData(username="x"),
+        repos=[_repo_with_issues("o/a", 3, 2), _repo_with_issues("o/b", 1, 0)],
+    )
+    coordinator = _FakeCoordinator(data, include_non_owned_orgs=False)
+
+    assert aggregation.counted_issues(coordinator) == 4
+    assert aggregation.counted_prs(coordinator) == 2
+
+
+def test_issues_of_uncounted_organisations_are_excluded() -> None:
+    """Same rule as every other total: non-owned orgs only count when the option says so."""
+    org = OrgData(name="Other", is_owned=False, repos=[_repo_with_issues("Other/x", 99, 99)])
+    data = DevCloudData(
+        profile=ProfileData(username="x"), repos=[_repo_with_issues("o/a", 3, 2)], orgs=[org]
+    )
+
+    assert aggregation.counted_issues(_FakeCoordinator(data, include_non_owned_orgs=False)) == 3
+    assert aggregation.counted_issues(_FakeCoordinator(data, include_non_owned_orgs=True)) == 102
+
+
+def test_platforms_without_issue_lists_fall_back_to_the_reported_count() -> None:
+    repo = _repo("o/a")
+    repo.open_issues = 7
+    data = DevCloudData(profile=ProfileData(username="x"), repos=[repo])
+
+    assert aggregation.counted_issues(_FakeCoordinator(data, include_non_owned_orgs=False)) == 7
+    assert aggregation.counted_prs(_FakeCoordinator(data, include_non_owned_orgs=False)) is None
+
+
+def test_repo_issue_count_is_dropped_once_both_lists_are_present() -> None:
+    """open_issues_count counts issues and PRs, so with both listed it is derivable."""
+    from dev_cloud import storage
+
+    repo = _repo_with_issues("o/a", 3, 2)
+    repo.open_issues = 5
+    payload = storage._serialize(
+        "github", "x", DevCloudData(profile=ProfileData(username="x"), repos=[repo])
+    )
+
+    assert "open_issues" not in payload["repos"][0]
+    assert len(payload["repos"][0]["issues"]) == 3
+    assert len(payload["repos"][0]["prs"]) == 2

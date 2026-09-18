@@ -25,7 +25,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from . import DevCloudConfigEntry
-from .aggregation import assets, collection_total, counted_releases, counted_repos
+from .aggregation import (
+    assets,
+    collection_total,
+    counted_issues,
+    counted_prs,
+    counted_releases,
+    counted_repos,
+)
 from .const import PLATFORM_ICONS
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
@@ -294,11 +301,7 @@ class DevCloudOpenIssuesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        data = self.coordinator.data
-        if data.open_issues:
-            return len(data.open_issues)
-        # Platforms without an issue search still report per-repository counts.
-        return sum(r.open_issues for r in data.repos)
+        return counted_issues(self.coordinator)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -323,7 +326,7 @@ class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return len(self.coordinator.data.open_prs)
+        return counted_prs(self.coordinator)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -554,11 +557,8 @@ _OPTIONAL_SENSORS: tuple[
     (DevCloudOrganizationsSensor, lambda c: bool(c.data.orgs)),
     (DevCloudPastesSensor, lambda c: collection_total(c, "pastes") is not None),
     (DevCloudNotificationsSensor, lambda c: bool(c.data.notifications)),
-    (
-        DevCloudOpenIssuesSensor,
-        lambda c: bool(c.data.open_issues) or any(r.open_issues for r in c.data.repos),
-    ),
-    (DevCloudOpenPullRequestsSensor, lambda c: bool(c.data.open_prs)),
+    (DevCloudOpenIssuesSensor, lambda c: counted_issues(c) is not None),
+    (DevCloudOpenPullRequestsSensor, lambda c: counted_prs(c) is not None),
     (
         DevCloudStarsSensor,
         lambda c: (

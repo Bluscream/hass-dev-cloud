@@ -58,8 +58,12 @@ class GitHubProvider(BaseDevCloudProvider):
         # Notifications are the one thing worth polling briskly, and they need a token.
         "notifications": ResourcePolicy(authenticated=300, anonymous=None),
         # Search has its own much tighter quota (30/min authenticated, 10/min anonymous).
-        "issues": ResourcePolicy(authenticated=900, anonymous=3600),
-        "prs": ResourcePolicy(authenticated=900, anonymous=3600),
+        "issues": ResourcePolicy(
+            authenticated=900, anonymous=3600, depends_on=("repos",), min_cache=600
+        ),
+        "prs": ResourcePolicy(
+            authenticated=900, anonymous=3600, depends_on=("repos",), min_cache=600
+        ),
         "sponsors": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
         # By far the most expensive: three nested paginated GraphQL connections.
         "releases": ResourcePolicy(
@@ -448,23 +452,50 @@ class GitHubProvider(BaseDevCloudProvider):
             )
         return notifications
 
-    async def _async_fetch_search(self, kind: str) -> list[dict[str, Any]]:
-        """Open issues (`kind="issue"`) or pull requests (`kind="pr"`) across the account."""
+    async def _async_fetch_search(self, kind: str) -> dict[str, list[dict[str, Any]]]:
+        """Open issues (`kind="issue"`) or pull requests (`kind="pr"`), keyed by repository.
+
+        Grouped rather than returned flat, because each one is attached to the repository it
+        belongs to. The account-wide totals are then summed from those, so there is no
+        second copy of the same items at the top level.
+        """
         items = await self._async_search_all(f"user:{self.account_name} type:{kind} state:open")
-        return [
-            {
-                "id": item.get("id"),
-                "number": item.get("number"),
-                "title": item.get("title"),
-                "url": item.get("html_url"),
-                "repository": item.get("repository_url", "").split("/")[-1],
-                "author": item.get("user", {}).get("login"),
-                "comments": item.get("comments", 0),
-                "created_at": item.get("created_at"),
-                "updated_at": item.get("updated_at"),
-            }
-            for item in items
-        ]
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            # repository_url is .../repos/{owner}/{name}; the pair is the key repos use.
+            parts = str(item.get("repository_url", "")).rstrip("/").split("/")
+            full_name = "/".join(parts[-2:]) if len(parts) >= 2 else ""
+            grouped.setdefault(full_name, []).append(
+                {
+                    "id": item.get("id"),
+                    "number": item.get("number"),
+                    "title": item.get("title"),
+                    "url": item.get("html_url"),
+                    "author": item.get("user", {}).get("login"),
+                    "comments": item.get("comments", 0),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                }
+            )
+        return grouped
+
+    @staticmethod
+    def _attach_issues(
+        repos: list[RepoData],
+        issues: dict[str, list[dict[str, Any]]],
+        prs: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        """Hang each repository's open issues and pull requests off the repository itself."""
+        for repo in repos:
+            repo.issues = issues.get(repo.full_name, [])
+            repo.prs = prs.get(repo.full_name, [])
+
+        known = {repo.full_name for repo in repos}
+        for full_name in (issues.keys() | prs.keys()) - known:
+            # The search is scoped to this account, so a repository it returns should always
+            # be in the listing. Worth a trace if that ever stops holding.
+            _LOGGER.debug("Search returned %s, which is not in the repository listing", full_name)
 
     async def _async_fetch_sponsors(self) -> tuple[int | None, int | None]:
         """Sponsor totals. The API exposes only counts here, so there is no list to derive."""
@@ -538,12 +569,13 @@ class GitHubProvider(BaseDevCloudProvider):
         notifications: list[NotificationData] = await self.async_resource(
             "notifications", self._async_fetch_notifications, []
         )
-        open_issues: list[dict[str, Any]] = await self.async_resource(
-            "issues", lambda: self._async_fetch_search("issue"), []
+        issues_by_repo: dict[str, list[dict[str, Any]]] = await self.async_resource(
+            "issues", lambda: self._async_fetch_search("issue"), {}
         )
-        open_prs: list[dict[str, Any]] = await self.async_resource(
-            "prs", lambda: self._async_fetch_search("pr"), []
+        prs_by_repo: dict[str, list[dict[str, Any]]] = await self.async_resource(
+            "prs", lambda: self._async_fetch_search("pr"), {}
         )
+        self._attach_issues(repos, issues_by_repo, prs_by_repo)
         sponsors: tuple[int | None, int | None] = await self.async_resource(
             "sponsors", self._async_fetch_sponsors, (None, None)
         )
@@ -570,8 +602,6 @@ class GitHubProvider(BaseDevCloudProvider):
             repos=repos,
             pastes=pastes,
             notifications=notifications,
-            open_issues=open_issues,
-            open_prs=open_prs,
             sponsors_count=sponsors_count,
             sponsoring_count=sponsoring_count,
             running_jobs_count=running_jobs_count,

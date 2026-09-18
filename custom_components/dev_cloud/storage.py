@@ -119,11 +119,32 @@ def _drop_totals_with_a_list(snapshot: dict[str, Any]) -> dict[str, Any]:
     return snapshot
 
 
+def _drop_repo_counts_with_lists(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Drop a repository's `open_issues` count once its issues and PRs are both listed.
+
+    GitHub's `open_issues_count` counts issues *and* pull requests, so with both lists
+    present it is exactly len(issues) + len(prs). Platforms that never enumerate them keep
+    the count, because there it is the only answer available.
+    """
+    for collection in ("repos", "orgs"):
+        for item in snapshot.get(collection) or []:
+            if not isinstance(item, dict):
+                continue
+            if collection == "orgs":
+                _drop_repo_counts_with_lists(item)
+                continue
+            if item.get("issues") and item.get("prs"):
+                item.pop("open_issues", None)
+    return snapshot
+
+
 def _serialize(platform: str, account: str, data: DevCloudData) -> dict[str, Any]:
     """Build the full JSON payload for one account snapshot."""
     snapshot = _prune(
-        _drop_totals_with_a_list(
-            _redact({k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS})
+        _drop_repo_counts_with_lists(
+            _drop_totals_with_a_list(
+                _redact({k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS})
+            )
         )
     )
     return {

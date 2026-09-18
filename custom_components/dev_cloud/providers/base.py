@@ -140,8 +140,6 @@ class BaseDevCloudProvider(ABC):
             ("pastes", data.pastes),
             ("packages", data.packages),
             ("notifications", data.notifications),
-            ("issues", data.open_issues),
-            ("prs", data.open_prs),
             ("releases", data.releases),
         ):
             if value:
@@ -152,6 +150,15 @@ class BaseDevCloudProvider(ABC):
         org_repos = {org.name: org.repos for org in data.orgs if org.repos}
         if org_repos:
             self._resource_values["org_repos"] = org_repos
+
+        # Issues and pull requests are stored inside their repository, so the grouped
+        # resources are rebuilt from there rather than persisted a second time.
+        for key, attr in (("issues", "issues"), ("prs", "prs")):
+            grouped = {
+                repo.full_name: getattr(repo, attr) for repo in data.repos if getattr(repo, attr)
+            }
+            if grouped:
+                self._resource_values[key] = grouped
 
     async def async_resource[T](
         self,

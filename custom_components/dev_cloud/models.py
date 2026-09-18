@@ -69,6 +69,11 @@ class RepoData:
     updated_at: str | None = None
     pushed_at: str | None = None
     upstream: str | None = None
+    # Open issues and pull requests belonging to this repository. Nested here rather than
+    # held in flat account-wide lists, so each one sits with the repository it is about and
+    # the account totals are summed from them.
+    issues: list[dict[str, Any]] = field(default_factory=list)
+    prs: list[dict[str, Any]] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -127,8 +132,6 @@ class DevCloudData:
     pastes: list[PasteData] = field(default_factory=list)
     packages: list[PackageData] = field(default_factory=list)
     notifications: list[NotificationData] = field(default_factory=list)
-    open_issues: list[dict[str, Any]] = field(default_factory=list)
-    open_prs: list[dict[str, Any]] = field(default_factory=list)
     # Sponsorships expose only totals over the API, so there is no list to count.
     sponsors_count: int | None = None
     sponsoring_count: int | None = None
