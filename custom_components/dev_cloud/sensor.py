@@ -143,6 +143,9 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             "following": prof.following,
             "rate_limit_remaining": data.rate_limit_remaining,
             "rate_limit_reset": data.rate_limit_reset,
+            # Effective refresh interval and measured request cost per resource, so the
+            # adaptive scheduler's choices are visible without reading the JSON dump.
+            "scheduling": data.scheduling or None,
         }
         attrs.update(prof.extra)
         return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
