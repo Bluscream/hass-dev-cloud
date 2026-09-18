@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from ..const import PLATFORM_CODEBERG, PLATFORM_GITEA
+from ..const import PLATFORM_GITEA
 from ..models import DevCloudData, OrgData, ProfileData, RepoData
 from .base import BaseDevCloudProvider
 
@@ -109,11 +109,3 @@ class GiteaProvider(BaseDevCloudProvider):
             orgs=orgs,
             repos=repos,
         )
-
-
-class CodebergProvider(GiteaProvider):
-    """Preset provider for Codeberg (Forgejo instance)."""
-
-    platform_id = PLATFORM_CODEBERG
-    default_base_url = "https://codeberg.org"
-    supports_custom_url = False

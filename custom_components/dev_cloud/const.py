@@ -35,9 +35,6 @@ PLATFORM_NPM: Final = "npm"
 PLATFORM_PYPI: Final = "pypi"
 PLATFORM_NUGET: Final = "nuget"
 
-# Legacy alias for backwards compat if needed
-PLATFORM_CODEBERG: Final = "codeberg"
-
 SUPPORTED_PLATFORMS: Final = {
     PLATFORM_GITHUB: "GitHub",
     PLATFORM_GITLAB: "GitLab",
@@ -63,7 +60,6 @@ DEFAULT_URLS: Final = {
     PLATFORM_GITHUB: "https://api.github.com",
     PLATFORM_GITLAB: "https://gitlab.com",
     PLATFORM_GITEA: "https://codeberg.org",
-    PLATFORM_CODEBERG: "https://codeberg.org",
     PLATFORM_DOCKERHUB: "https://hub.docker.com",
     PLATFORM_NPM: "https://registry.npmjs.org",
     PLATFORM_PYPI: "https://pypi.org",

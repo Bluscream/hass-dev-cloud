@@ -16,7 +16,7 @@ from . import DevCloudConfigEntry
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
 
-FORGE_PLATFORMS = ("github", "gitlab", "gitea", "codeberg")
+FORGE_PLATFORMS = ("github", "gitlab", "gitea")
 
 
 async def async_setup_entry(

@@ -5,7 +5,6 @@ from __future__ import annotations
 from aiohttp import ClientSession
 
 from ..const import (
-    PLATFORM_CODEBERG,
     PLATFORM_DOCKERHUB,
     PLATFORM_GITEA,
     PLATFORM_GITHUB,
@@ -22,7 +21,7 @@ from .base import (
     DevCloudRateLimitError,
 )
 from .dockerhub import DockerHubProvider
-from .gitea import CodebergProvider, GiteaProvider
+from .gitea import GiteaProvider
 from .github import GitHubProvider
 from .gitlab import GitLabProvider
 from .npm import NPMProvider
@@ -33,7 +32,6 @@ PROVIDER_REGISTRY: dict[str, type[BaseDevCloudProvider]] = {
     PLATFORM_GITHUB: GitHubProvider,
     PLATFORM_GITLAB: GitLabProvider,
     PLATFORM_GITEA: GiteaProvider,
-    PLATFORM_CODEBERG: CodebergProvider,
     PLATFORM_DOCKERHUB: DockerHubProvider,
     PLATFORM_NPM: NPMProvider,
     PLATFORM_PYPI: PyPIProvider,
