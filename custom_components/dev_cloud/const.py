@@ -67,6 +67,9 @@ EVENT_PACKAGE_CHANGED: Final = "dev_cloud_package_changed"
 EVENT_NEW_ORG: Final = "dev_cloud_new_org"
 EVENT_ORG_REMOVED: Final = "dev_cloud_org_removed"
 
+EVENT_NEW_DOWNLOADS: Final = "dev_cloud_new_downloads"
+EVENT_NEW_PULLS: Final = "dev_cloud_new_pulls"
+
 EVENT_NEW_NOTIFICATION: Final = "dev_cloud_new_notification"
 
 # Platforms

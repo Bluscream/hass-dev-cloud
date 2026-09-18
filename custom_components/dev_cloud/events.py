@@ -24,11 +24,13 @@ from .const import (
     EVENT_FORKS_CHANGED,
     EVENT_ISSUE_CLOSED,
     EVENT_NEW_BRANCH,
+    EVENT_NEW_DOWNLOADS,
     EVENT_NEW_ISSUE,
     EVENT_NEW_NOTIFICATION,
     EVENT_NEW_ORG,
     EVENT_NEW_PACKAGE,
     EVENT_NEW_PR,
+    EVENT_NEW_PULLS,
     EVENT_NEW_RELEASE,
     EVENT_NEW_REPO,
     EVENT_NEW_TAG,
@@ -91,6 +93,9 @@ def changes(previous: Item | None, current: Item) -> list[Event]:
 
     Returns nothing without a baseline: the first poll of a fresh account would otherwise
     announce every repository, package and organisation that already existed.
+
+    Download and pull counters are reported as one batched event each rather than per item,
+    because they move constantly and an account can hold thousands of assets.
     """
     if not previous:
         return []
@@ -102,6 +107,13 @@ def changes(previous: Item | None, current: Item) -> list[Event]:
     )
     events += _package_changes(previous, current)
     events += _notification_changes(previous, current)
+
+    # Account-wide rather than per item: see the two functions for why.
+    if _comparable(previous, current, "repos", "repos"):
+        events += _download_totals(previous, current)
+    if _comparable(previous, current, "packages", "packages"):
+        events += _pull_totals(previous, current)
+
     return events
 
 
@@ -210,6 +222,95 @@ def _release_changes(repository: str, old: Item, new: Item) -> list[Event]:
                 )
             )
     return events
+
+
+def _download_totals(previous: Item, current: Item) -> list[Event]:
+    """One event for everything downloaded since the last poll, across the whole account.
+
+    Per-asset events would be unusable: this account has 3,581 release assets, and any of
+    them can tick at any time. Batched, it is a single "1,234 new downloads" worth pushing,
+    with the breakdown attached for a message that names the busiest repository.
+    """
+    was = _asset_downloads(previous)
+    now = _asset_downloads(current)
+    if not now:
+        return []
+
+    gains = [
+        (key, count - was.get(key, 0)) for key, count in now.items() if count > was.get(key, 0)
+    ]
+    if not gains:
+        return []
+
+    by_repo: dict[str, int] = {}
+    for (repository, _tag, _asset), delta in gains:
+        by_repo[repository] = by_repo.get(repository, 0) + delta
+
+    top = sorted(by_repo.items(), key=lambda kv: kv[1], reverse=True)
+    return [
+        (
+            EVENT_NEW_DOWNLOADS,
+            {
+                "delta": sum(d for _, d in gains),
+                "total": sum(now.values()),
+                "previous_total": sum(was.get(k, 0) for k in now),
+                "assets": len(gains),
+                "repositories": len(by_repo),
+                "top_repository": top[0][0],
+                "top_repository_delta": top[0][1],
+                "breakdown": [{"repository": r, "delta": d} for r, d in top[:10]],
+            },
+        )
+    ]
+
+
+def _asset_downloads(payload: Item) -> dict[tuple[str, str, str], int]:
+    """Download count for every asset in the account, keyed by repo, tag and asset name."""
+    counts: dict[tuple[str, str, str], int] = {}
+    repos = list(payload.get("repos") or [])
+    repos += [r for org in payload.get("orgs") or [] for r in org.get("repos") or []]
+
+    for repo in repos:
+        name = repo.get("full_name")
+        if not name:
+            continue
+        for release in repo.get("releases") or []:
+            tag = str(release.get("tag"))
+            for asset in release.get("assets") or []:
+                key = (str(name), tag, str(asset.get("name")))
+                counts[key] = int(asset.get("downloads", 0) or 0)
+    return counts
+
+
+def _pull_totals(previous: Item, current: Item) -> list[Event]:
+    """One event for everything pulled since the last poll, across every image."""
+    was = {
+        str(p.get("name")): int(p.get("pull_count", 0) or 0) for p in previous.get("packages") or []
+    }
+    now = {
+        str(p.get("name")): int(p.get("pull_count", 0) or 0) for p in current.get("packages") or []
+    }
+    gains = [
+        (name, count - was.get(name, 0)) for name, count in now.items() if count > was.get(name, 0)
+    ]
+    if not gains:
+        return []
+
+    top = sorted(gains, key=lambda kv: kv[1], reverse=True)
+    return [
+        (
+            EVENT_NEW_PULLS,
+            {
+                "delta": sum(d for _, d in gains),
+                "total": sum(now.values()),
+                "previous_total": sum(was.get(k, 0) for k in now),
+                "packages": len(gains),
+                "top_package": top[0][0],
+                "top_package_delta": top[0][1],
+                "breakdown": [{"name": n, "delta": d} for n, d in top[:10]],
+            },
+        )
+    ]
 
 
 def _ref_changes(

@@ -13,6 +13,7 @@ from dev_cloud.const import (
     EVENT_BRANCH_REMOVED,
     EVENT_ISSUE_CLOSED,
     EVENT_NEW_BRANCH,
+    EVENT_NEW_DOWNLOADS,
     EVENT_NEW_ISSUE,
     EVENT_NEW_NOTIFICATION,
     EVENT_NEW_ORG,
@@ -213,11 +214,60 @@ def test_a_collection_emptying_entirely_is_treated_as_a_failed_fetch() -> None:
     assert events.changes(before, _snap(repos=[])) == []
 
 
-def test_download_counts_ticking_upward_do_not_fire_events() -> None:
-    """Downloads only ever increase, so treating them as a change would fire every poll."""
+def test_a_download_does_not_also_count_as_the_release_changing() -> None:
+    """Downloads get one batched event; they must not additionally mark every release as
+    edited, which would fire per release on every poll."""
     before = _repo("o/a", releases=("v1",))
     before.releases = [{"tag": "v1", "name": "v1", "assets": [{"name": "x", "downloads": 10}]}]
     after = _repo("o/a", releases=("v1",))
     after.releases = [{"tag": "v1", "name": "v1", "assets": [{"name": "x", "downloads": 99}]}]
 
-    assert events.changes(_snap(repos=[before]), _snap(repos=[after])) == []
+    result = events.changes(_snap(repos=[before]), _snap(repos=[after]))
+    assert _types(result) == [EVENT_NEW_DOWNLOADS]
+    assert _first(result, EVENT_NEW_DOWNLOADS)["delta"] == 89
+
+
+def _repo_with_downloads(full_name: str, tag: str, downloads: int) -> RepoData:
+    repo = _repo(full_name)
+    repo.releases = [{"tag": tag, "name": tag, "assets": [{"name": "app.zip", "downloads": downloads}]}]
+    return repo
+
+
+def test_downloads_are_reported_as_one_batched_event() -> None:
+    """Per-asset events would be unusable — this account has 3,581 release assets."""
+    before = _snap(repos=[_repo_with_downloads("o/a", "v1", 100), _repo_with_downloads("o/b", "v1", 50)])
+    after = _snap(repos=[_repo_with_downloads("o/a", "v1", 1100), _repo_with_downloads("o/b", "v1", 75)])
+
+    result = events.changes(before, after)
+    assert _types(result).count(EVENT_NEW_DOWNLOADS) == 1
+
+    payload = _first(result, EVENT_NEW_DOWNLOADS)
+    assert payload["delta"] == 1025
+    assert payload["total"] == 1175
+    assert payload["assets"] == 2
+    assert payload["repositories"] == 2
+    assert payload["top_repository"] == "o/a"
+    assert payload["top_repository_delta"] == 1000
+    assert payload["breakdown"][0] == {"repository": "o/a", "delta": 1000}
+
+
+def test_no_download_event_when_nothing_moved() -> None:
+    same = [_repo_with_downloads("o/a", "v1", 100)]
+    assert events.changes(_snap(repos=same), _snap(repos=same)) == []
+
+
+def test_downloads_only_report_increases() -> None:
+    """A falling count means an asset or release was removed, which release_changed covers."""
+    before = _snap(repos=[_repo_with_downloads("o/a", "v1", 500)])
+    after = _snap(repos=[_repo_with_downloads("o/a", "v1", 400)])
+
+    assert EVENT_NEW_DOWNLOADS not in _types(events.changes(before, after))
+
+
+def test_organisation_downloads_count_towards_the_batch() -> None:
+    """They are in the snapshot, so a push about "your downloads" should include them."""
+    org_before = OrgData(name="Org", is_owned=True, repos=[_repo_with_downloads("Org/x", "v1", 10)])
+    org_after = OrgData(name="Org", is_owned=True, repos=[_repo_with_downloads("Org/x", "v1", 60)])
+
+    result = events.changes(_snap(orgs=[org_before]), _snap(orgs=[org_after]))
+    assert _first(result, EVENT_NEW_DOWNLOADS)["delta"] == 50

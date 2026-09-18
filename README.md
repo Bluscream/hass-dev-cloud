@@ -331,6 +331,8 @@ anything up.
 | `dev_cloud_new_package` / `_package_removed` | `name`, `package` |
 | `dev_cloud_package_changed` | `name`, `old`, `new`, `changed` |
 | `dev_cloud_new_org` / `_org_removed` | `name`, `organization` |
+| `dev_cloud_new_downloads` | `delta`, `total`, `previous_total`, `assets`, `repositories`, `top_repository`, `top_repository_delta`, `breakdown` |
+| `dev_cloud_new_pulls` | `delta`, `total`, `previous_total`, `packages`, `top_package`, `top_package_delta`, `breakdown` |
 | `dev_cloud_new_notification` | `title`, `repository`, `url`, `reason`, `subject_type`, `notification` |
 
 `delta` is signed, so one trigger covers a star gained and a star lost.
@@ -357,9 +359,14 @@ deletion.
 **Nothing when a collection empties entirely.** Everything vanishing in one poll is far more
 likely to be a bad response than a real deletion of all of it.
 
-**Nothing for values that only ever move one way.** Download and pull counts tick upward
-constantly; treating those as changes would fire an event on every poll, so they are excluded
-from change detection while remaining in the snapshot and the sensors.
+**Counters are batched, not itemised.** Download and pull counts tick upward constantly, and
+this account holds 3,581 release assets — an event per asset would be unusable. Instead one
+`dev_cloud_new_downloads` per poll carries the account-wide delta plus a breakdown of the
+busiest repositories, and one `dev_cloud_new_pulls` does the same for images. Only increases
+are reported; a falling count means something was deleted, which `release_changed` covers.
+
+Organisation repositories count towards the download batch, since they are in the snapshot
+either way.
 
 ### Example automation
 
@@ -371,6 +378,8 @@ triggers:
     event_type: dev_cloud_new_notification
   - trigger: event
     event_type: dev_cloud_new_release
+  - trigger: event
+    event_type: dev_cloud_new_downloads
 actions:
   - action: notify.mobile_app_phone
     data:
@@ -380,6 +389,8 @@ actions:
           ⭐ {{ d.repository }} {{ '+' if d.delta > 0 else '' }}{{ d.delta }}
         {% elif trigger.event.event_type == 'dev_cloud_new_release' %}
           🚀 {{ d.repository }} {{ d.tag }}
+        {% elif trigger.event.event_type == 'dev_cloud_new_downloads' %}
+          📥 {{ "{:,}".format(d.delta) }} new downloads
         {% else %}
           🔔 {{ d.repository or d.platform }}
         {% endif %}
