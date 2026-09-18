@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from aiogithubapi import (
     GitHubAPI,
@@ -133,7 +133,7 @@ class GitHubProvider(BaseDevCloudProvider):
     # Authenticated REST gets 5000 requests/hour, anonymous only 60 — hence the order of
     # magnitude between the two columns. The scheduler stretches these further if the live
     # budget demands it; it never shortens them.
-    resource_policies = {
+    resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "profile": ResourcePolicy(authenticated=600, anonymous=1800),
         "repos": ResourcePolicy(authenticated=900, anonymous=3600),
         "orgs": ResourcePolicy(authenticated=3600, anonymous=7200),

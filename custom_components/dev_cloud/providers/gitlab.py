@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from ..const import PLATFORM_GITLAB, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
 from ..models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
@@ -24,7 +24,7 @@ class GitLabProvider(BaseDevCloudProvider):
     # GitLab.com allows ~2000 authenticated requests/minute but far less unauthenticated,
     # and self-hosted instances vary wildly — so the anonymous column is conservative.
     # Groups and todos require a token.
-    resource_policies = {
+    resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "profile": ResourcePolicy(authenticated=600, anonymous=1800),
         "repos": ResourcePolicy(authenticated=900, anonymous=3600),
         "pastes": ResourcePolicy(authenticated=1800, anonymous=3600),

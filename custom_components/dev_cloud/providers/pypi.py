@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import ClassVar
 
 from ..const import PLATFORM_PYPI
 from ..models import DevCloudData, PackageData, ProfileData
@@ -22,7 +23,7 @@ class PyPIProvider(BaseDevCloudProvider):
 
     # PyPI publishes no per-user JSON API, so this scrapes the profile page. That makes it
     # the politest of all the providers to poll rarely.
-    resource_policies = {
+    resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "packages": ResourcePolicy(authenticated=3600, anonymous=3600),
     }
 

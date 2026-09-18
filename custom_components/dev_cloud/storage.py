@@ -21,6 +21,7 @@ import re
 import tempfile
 from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -76,9 +77,9 @@ def build_json_url(platform: str, account: str) -> str:
     return f"/local/{WWW_SUBDIR}/{platform}/{slugify_account(account)}.json"
 
 
-def _build_json_path(hass: HomeAssistant, platform: str, account: str) -> str:
+def _build_json_path(hass: HomeAssistant, platform: str, account: str) -> Path:
     """Return the absolute path of an account's JSON cache file."""
-    return hass.config.path("www", WWW_SUBDIR, platform, f"{slugify_account(account)}.json")
+    return Path(hass.config.path("www", WWW_SUBDIR, platform, f"{slugify_account(account)}.json"))
 
 
 def _serialize(platform: str, account: str, data: DevCloudData) -> dict[str, Any]:
@@ -93,21 +94,25 @@ def _serialize(platform: str, account: str, data: DevCloudData) -> dict[str, Any
     }
 
 
-def _write_json(path: str, payload: dict[str, Any]) -> None:
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write the payload atomically. Runs in an executor — never call from the event loop."""
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    handle_fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp-", suffix=".json")
+    # Written to a sibling temp file and renamed, so a reader never sees a half-written
+    # document and a crash mid-write cannot truncate the previous snapshot.
+    handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+    tmp_path = Path(tmp_name)
     try:
+        # fdopen adopts the descriptor mkstemp already opened, so closing the wrapper closes
+        # it exactly once. Reopening tmp_path by name would leak that original descriptor.
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
             # default=str keeps unexpected provider types (datetimes, enums) serializable
             # rather than failing the whole dump.
             json.dump(payload, handle, indent=2, default=str)
-        os.replace(tmp_path, path)
+        tmp_path.replace(path)
     except BaseException:
         with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
+            tmp_path.unlink()
         raise
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from ..const import PLATFORM_GITEA, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
 from ..models import DevCloudData, NotificationData, OrgData, ProfileData, RepoData
@@ -23,7 +23,7 @@ class GiteaProvider(BaseDevCloudProvider):
     # Self-hosted instances are usually small and unmetered, but they are also somebody's
     # Raspberry Pi — so these stay polite rather than maximal. Notifications and Actions
     # need a token.
-    resource_policies = {
+    resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "profile": ResourcePolicy(authenticated=600, anonymous=1800),
         "repos": ResourcePolicy(authenticated=900, anonymous=3600),
         "orgs": ResourcePolicy(authenticated=3600, anonymous=7200),

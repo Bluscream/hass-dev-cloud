@@ -6,7 +6,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, ClassVar
 
 from aiohttp import ClientSession
 
@@ -92,7 +92,7 @@ class BaseDevCloudProvider(ABC):
 
     #: How often each resource may be refreshed, declared by the subclass. Resources absent
     #: from this mapping are refreshed on every poll. See `scheduling.ResourceScheduler`.
-    resource_policies: dict[str, ResourcePolicy] = {}
+    resource_policies: ClassVar[dict[str, ResourcePolicy]] = {}
 
     def __init__(
         self,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from ..const import PLATFORM_NPM
 from ..models import DevCloudData, OrgData, PackageData, ProfileData
@@ -21,7 +22,7 @@ class NPMProvider(BaseDevCloudProvider):
 
     # The npm registry is unauthenticated and unmetered here, but package metadata is
     # near-static, so there is no reason to poll it often.
-    resource_policies = {
+    resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "packages": ResourcePolicy(authenticated=1800, anonymous=1800),
         "orgs": ResourcePolicy(authenticated=3600, anonymous=3600),
     }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from typing import ClassVar
 
 from aiohttp import ClientSession
 
@@ -29,7 +30,7 @@ class DockerHubProvider(BaseDevCloudProvider):
 
     # Docker Hub applies no documented request quota to these endpoints, but pull counts
     # move slowly, so there is nothing to gain from polling them hard.
-    resource_policies = {
+    resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "profile": ResourcePolicy(authenticated=1800, anonymous=1800),
         "packages": ResourcePolicy(authenticated=900, anonymous=1800),
     }

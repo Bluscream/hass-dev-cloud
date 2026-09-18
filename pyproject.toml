@@ -3,4 +3,32 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# Broad set rather than the default minimum. S (bandit) and ASYNC are worth the noise in an
+# integration that talks to remote APIs from the event loop; PTH keeps filesystem access on
+# pathlib; RUF catches the dataclass and mutable-default traps this codebase is full of.
+select = [
+    "E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "ASYNC", "S", "PTH",
+    "PLR0915", "C901",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert against fixtures and construct throwaway objects.
+"tests/*" = ["S101"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_return_any = true
+disallow_untyped_defs = true
+# Home Assistant and aiogithubapi ship no usable stubs for the surfaces used here.
+[[tool.mypy.overrides]]
+module = ["homeassistant.*", "aiogithubapi.*", "voluptuous.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

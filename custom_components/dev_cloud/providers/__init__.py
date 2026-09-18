@@ -59,11 +59,11 @@ def get_provider(
 
 
 __all__ = [
+    "PROVIDER_REGISTRY",
     "BaseDevCloudProvider",
     "DevCloudAuthError",
     "DevCloudNotFoundError",
     "DevCloudProviderError",
     "DevCloudRateLimitError",
-    "PROVIDER_REGISTRY",
     "get_provider",
 ]

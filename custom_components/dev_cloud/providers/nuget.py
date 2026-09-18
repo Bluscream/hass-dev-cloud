@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from ..const import PLATFORM_NUGET
 from ..models import DevCloudData, PackageData, ProfileData
@@ -23,7 +24,7 @@ class NuGetProvider(BaseDevCloudProvider):
 
     # The NuGet search index is a public CDN; download counts update on its own schedule,
     # so polling faster than this only re-reads the same numbers.
-    resource_policies = {
+    resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "packages": ResourcePolicy(authenticated=1800, anonymous=1800),
     }
 
