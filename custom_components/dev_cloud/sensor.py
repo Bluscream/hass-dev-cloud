@@ -576,7 +576,9 @@ _OPTIONAL_SENSORS: tuple[
     # Stars, forks and watchers come off the repositories, so collecting those is what
     # makes them answerable — a repository with no stars still has an answer.
     (DevCloudStarsSensor, lambda c: _collected(c, "repos", "packages")),
-    (DevCloudWatchersSensor, lambda c: _collected(c, "repos")),
+    # Watchers come from the GraphQL walk, not the repository listing: REST only exposes a
+    # deprecated alias for stars. Without that walk there is no watcher figure to report.
+    (DevCloudWatchersSensor, lambda c: _collected(c, "releases")),
     (DevCloudForksSensor, lambda c: _collected(c, "repos")),
     (DevCloudReleasesSensor, lambda c: _collected(c, "releases")),
     (DevCloudReleaseAssetsSensor, lambda c: _collected(c, "releases")),

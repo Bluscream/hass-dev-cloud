@@ -331,3 +331,21 @@ def sensor_source() -> str:
     from dev_cloud import sensor
 
     return str(sensor.__file__)
+
+
+def test_watchers_are_not_read_from_the_rest_alias() -> None:
+    """GitHub's watchers_count is a deprecated alias for stargazers_count, so reading it
+    made the Watchers sensor a second copy of Stars — both read 1894."""
+    import inspect
+
+    from dev_cloud.providers.github import GitHubProvider
+
+    # The call, not the word: the source carries a comment explaining why it is not read.
+    assert '.get("watchers_count")' not in inspect.getsource(GitHubProvider._to_repo)
+
+
+def test_the_graphql_walk_asks_for_the_real_watcher_count() -> None:
+    from dev_cloud.providers.github.queries import ORG_RELEASES_QUERY, USER_RELEASES_QUERY
+
+    for query in (USER_RELEASES_QUERY, ORG_RELEASES_QUERY):
+        assert "watchers { totalCount }" in query

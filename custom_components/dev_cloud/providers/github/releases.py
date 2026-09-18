@@ -109,8 +109,9 @@ async def _build_release(
     }
 
 
-#: Per-repository detail keyed by "owner/name": its releases, branches and tags.
-type RepoDetail = dict[str, dict[str, list[dict[str, Any]]]]
+#: Per-repository detail keyed by "owner/name": releases, branches, tags and the watcher
+#: count. Values are heterogeneous because the watcher count is a number, not a list.
+type RepoDetail = dict[str, dict[str, Any]]
 
 
 async def async_fetch_all_releases(graphql: GraphQLCaller, login: str) -> RepoDetail:
@@ -173,7 +174,7 @@ async def _releases_for(
     assets per release, and the branch and tag refs — so each list is authoritative and the
     totals can be summed from them rather than stored beside them.
     """
-    detail: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    detail: RepoDetail = {}
     cursor: str | None = None
 
     for _ in range(MAX_PAGES):

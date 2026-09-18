@@ -30,6 +30,14 @@ REF_FIELDS = """
   nodes { name target { oid } }
 """
 
+#: The real watcher count. REST's `watchers_count` is a deprecated alias for
+#: `stargazers_count`, and `subscribers_count` — which is the true figure — is only returned
+#: by the single-repository endpoint. Asking here costs one node per repository instead of
+#: one request per repository.
+REPO_WATCHERS = """
+  watchers { totalCount }
+"""
+
 REPO_REFS = f"""
   branches: refs(refPrefix: "refs/heads/", first: {GRAPHQL_REFS_PAGE_SIZE}) {{ {REF_FIELDS} }}
   tags: refs(refPrefix: "refs/tags/", first: {GRAPHQL_REFS_PAGE_SIZE}) {{ {REF_FIELDS} }}
@@ -64,6 +72,7 @@ query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
       pageInfo {{ hasNextPage endCursor }}
       nodes {{
         nameWithOwner
+        {REPO_WATCHERS}
         {REPO_REFS}
         releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
           pageInfo {{ hasNextPage endCursor }}
@@ -94,6 +103,7 @@ query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
       pageInfo {{ hasNextPage endCursor }}
       nodes {{
         nameWithOwner
+        {REPO_WATCHERS}
         {REPO_REFS}
         releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
           pageInfo {{ hasNextPage endCursor }}

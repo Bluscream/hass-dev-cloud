@@ -346,7 +346,8 @@ class GitHubProvider(BaseDevCloudProvider):
             is_archived=bool(r.get("archived")),
             stars=r.get("stargazers_count") or 0,
             forks=r.get("forks_count") or 0,
-            watchers=r.get("watchers_count") or 0,
+            # watchers_count is a deprecated alias for stargazers_count, so it is not read
+            # here at all. The real figure comes from the GraphQL walk.
             open_issues=r.get("open_issues_count") or 0,
             primary_language=r.get("language"),
             default_branch=r.get("default_branch"),
@@ -491,6 +492,9 @@ class GitHubProvider(BaseDevCloudProvider):
             repo.releases = found.get("releases", repo.releases)
             repo.branches = found.get("branches", repo.branches)
             repo.tags = found.get("tags", repo.tags)
+            watchers = found.get("watchers")
+            if isinstance(watchers, int):
+                repo.watchers = watchers
 
     @staticmethod
     def _attach_issues(
