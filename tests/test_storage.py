@@ -90,3 +90,13 @@ def test_write_json_preserves_previous_file_when_serialising_fails(tmp_path: Pat
 
     assert json.loads(target.read_text()) == {"generation": 1}
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".tmp")] == []
+
+
+def test_write_json_is_minified(tmp_path: Path) -> None:
+    """These files are consumed by programs; whitespace is a megabyte-scale cost here."""
+    target = tmp_path / "snapshot.json"
+    storage._write_json(target, {"a": 1, "b": [{"c": 2}]})
+
+    raw = target.read_text()
+    assert raw == '{"a":1,"b":[{"c":2}]}'
+    assert "\n" not in raw

@@ -108,9 +108,10 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         # fdopen adopts the descriptor mkstemp already opened, so closing the wrapper closes
         # it exactly once. Reopening tmp_path by name would leak that original descriptor.
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
-            # default=str keeps unexpected provider types (datetimes, enums) serializable
-            # rather than failing the whole dump.
-            json.dump(payload, handle, indent=2, default=str)
+            # Minified: these files are fetched by programs, not read by hand, and the
+            # GitHub snapshot runs past a megabyte. default=str keeps unexpected provider
+            # types (datetimes, enums) serializable rather than failing the whole dump.
+            json.dump(payload, handle, separators=(",", ":"), default=str)
         tmp_path.replace(path)
     except BaseException:
         with contextlib.suppress(OSError):
