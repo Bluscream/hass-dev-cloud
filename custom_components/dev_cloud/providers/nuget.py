@@ -26,6 +26,8 @@ class NuGetProvider(BaseDevCloudProvider):
 
     # The NuGet search index is a public CDN; download counts update on its own schedule,
     # so polling faster than this only re-reads the same numbers.
+    # No `profile` resource: nuget.org exposes only an HTML profile page, and scraping
+    # it for a display name is not worth a request per poll.
     resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "packages": ResourcePolicy(authenticated=1800, anonymous=1800),
     }

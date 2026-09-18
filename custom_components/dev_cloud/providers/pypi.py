@@ -23,6 +23,8 @@ class PyPIProvider(BaseDevCloudProvider):
 
     # PyPI publishes no per-user JSON API, so this scrapes the profile page. That makes it
     # the politest of all the providers to poll rarely.
+    # No `profile` resource: PyPI publishes no user JSON, only the HTML page already
+    # scraped for packages, and it carries no display name worth a second parse.
     resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "packages": ResourcePolicy(authenticated=3600, anonymous=3600),
     }

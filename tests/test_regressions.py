@@ -349,3 +349,19 @@ def test_the_graphql_walk_asks_for_the_real_watcher_count() -> None:
 
     for query in (USER_RELEASES_QUERY, ORG_RELEASES_QUERY):
         assert "watchers { totalCount }" in query
+
+
+def test_npm_does_not_fabricate_an_avatar_from_another_service() -> None:
+    """The npm account name was used to build a GitHub avatar URL. They are different
+    namespaces: github.com/bluscream1 does not exist, yet the URL still serves an image."""
+    import inspect
+
+    from dev_cloud.providers.npm import NPMProvider
+
+    import ast
+
+    # Parsed, not grepped: the source carries a comment naming the URL it no longer builds.
+    tree = ast.parse(inspect.getsource(NPMProvider).lstrip())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "avatar_url":
+            raise AssertionError("npm has no avatar of its own to report")

@@ -22,6 +22,9 @@ class NPMProvider(BaseDevCloudProvider):
 
     # The npm registry is unauthenticated and unmetered here, but package metadata is
     # near-static, so there is no reason to poll it often.
+    # No `profile` resource: npm's user document (/-/user/org.couchdb.user:<name>)
+    # returns {"ok": false} even with a valid token, so there is nothing to fetch and
+    # the profile is synthesised from the account name at no request cost.
     resource_policies: ClassVar[dict[str, ResourcePolicy]] = {
         "packages": ResourcePolicy(authenticated=1800, anonymous=1800),
         "orgs": ResourcePolicy(authenticated=3600, anonymous=3600),
@@ -108,11 +111,14 @@ class NPMProvider(BaseDevCloudProvider):
         )
         orgs: list[OrgData] = await self.async_resource("orgs", self._async_fetch_orgs, [])
 
+        # No avatar: this was guessed as avatars.githubusercontent.com/<account>, which
+        # assumes the npm name belongs to the same person on GitHub. It does not —
+        # github.com/bluscream1 does not exist, yet that URL still serves an image, so the
+        # sensor showed a face belonging to nobody. npm exposes no avatar of its own.
         profile = ProfileData(
             username=self.account_name,
             display_name=self.account_name,
             profile_url=f"https://www.npmjs.com/~{self.account_name}",
-            avatar_url=f"https://avatars.githubusercontent.com/{self.account_name}",
         )
 
         return DevCloudData(
