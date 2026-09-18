@@ -21,7 +21,11 @@
         "data": {
           "account_name": "Account / Username",
           "instance_url": "Instance Base URL",
-          "api_token": "API Token / Personal Access Token (Optional)"
+          "api_token": "API Token / Personal Access Token (Optional)",
+          "include_non_owned_orgs": "Totals include non-owned organisations"
+        },
+        "data_description": {
+          "include_non_owned_orgs": "Count repositories from organisations you are only a member of towards the stars, forks, releases, assets and downloads totals. Organisations you own always count."
         }
       }
     },
@@ -44,7 +48,11 @@
         "description": "Adjust polling interval and event dispatch settings.",
         "data": {
           "scan_interval": "Update Interval (seconds)",
-          "enable_events": "Fire Home Assistant events on new repositories or packages"
+          "enable_events": "Fire Home Assistant events on new repositories or packages",
+          "include_non_owned_orgs": "Totals include non-owned organisations"
+        },
+        "data_description": {
+          "include_non_owned_orgs": "Count repositories from organisations you are only a member of towards the stars, forks, releases, assets and downloads totals. Organisations you own always count."
         }
       }
     }

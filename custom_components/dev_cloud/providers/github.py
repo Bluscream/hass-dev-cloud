@@ -22,6 +22,7 @@ from .base import (
     DevCloudNotFoundError,
     DevCloudRateLimitError,
     async_collect_running_jobs,
+    async_map_limited,
 )
 from .scheduling import PageWalker, ResourcePolicy
 
@@ -82,6 +83,23 @@ query($owner: String!, $name: String!, $cursor: String, $size: Int!, $nested: In
 }}
 """
 
+_ORG_RELEASES_QUERY = f"""
+query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
+  organization(login: $login) {{
+    repositories(first: $size, after: $cursor, orderBy: {{field: PUSHED_AT, direction: DESC}}) {{
+      pageInfo {{ hasNextPage endCursor }}
+      nodes {{
+        nameWithOwner
+        releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
+          pageInfo {{ hasNextPage endCursor }}
+          nodes {{ {_RELEASE_FIELDS} }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+
 _SPONSORS_QUERY = """
 query($login: String!) {
   user(login: $login) {
@@ -128,6 +146,9 @@ class GitHubProvider(BaseDevCloudProvider):
         "sponsors": ResourcePolicy(authenticated=3600, anonymous=None),
         # By far the most expensive: three nested paginated GraphQL connections.
         "releases": ResourcePolicy(authenticated=3600, anonymous=None),
+        # Fan out over every organisation, so they keep the same slow cadence as releases.
+        "org_repos": ResourcePolicy(authenticated=3600, anonymous=7200),
+        "org_releases": ResourcePolicy(authenticated=3600, anonymous=None),
         # Must stay fresh to mean anything, but is capped to a handful of repos.
         "running_jobs": ResourcePolicy(authenticated=300, anonymous=600),
     }
@@ -321,7 +342,29 @@ class GitHubProvider(BaseDevCloudProvider):
         }
 
     async def _async_fetch_all_releases(self) -> list[dict[str, Any]]:
-        """Every release of every owned repository, each with its complete asset list.
+        """Every release of every repository owned by the account."""
+        return await self._async_releases_for(_USER_RELEASES_QUERY, self.account_name, "user")
+
+    async def _async_fetch_org_releases(self, orgs: list[OrgData]) -> list[dict[str, Any]]:
+        """Every release across the given organisations' repositories."""
+
+        async def _fetch(org: OrgData) -> list[dict[str, Any]]:
+            return await self._async_releases_for(_ORG_RELEASES_QUERY, org.name, "organization")
+
+        results = await async_map_limited(orgs, _fetch, RUNNING_JOBS_CONCURRENCY)
+
+        releases: list[dict[str, Any]] = []
+        for result in results:
+            if isinstance(result, BaseException):
+                _LOGGER.debug("Org release listing failed: %s", result)
+                continue
+            releases.extend(result)
+        return releases
+
+    async def _async_releases_for(
+        self, query: str, login: str, root_key: str
+    ) -> list[dict[str, Any]]:
+        """Every release of every repository under one user or organisation.
 
         Three nested GraphQL connections are paginated: repositories, releases per
         repository, and assets per release. Nothing is capped by item count, so
@@ -332,15 +375,15 @@ class GitHubProvider(BaseDevCloudProvider):
 
         for _ in range(MAX_PAGES):
             data = await self._async_graphql(
-                _USER_RELEASES_QUERY,
+                query,
                 {
-                    "login": self.account_name,
+                    "login": login,
                     "cursor": cursor,
                     "size": GRAPHQL_PAGE_SIZE,
                     "nested": GRAPHQL_NESTED_PAGE_SIZE,
                 },
             )
-            repos_conn = ((data.get("user") or {}).get("repositories")) or {}
+            repos_conn = ((data.get(root_key) or {}).get("repositories")) or {}
 
             for repo in repos_conn.get("nodes") or []:
                 name_with_owner = repo.get("nameWithOwner")
@@ -439,31 +482,54 @@ class GitHubProvider(BaseDevCloudProvider):
                 f"/users/{self.account_name}/repos", params={"sort": "updated"}
             )
 
-        return [
-            RepoData(
-                name=r.get("name", ""),
-                full_name=r.get("full_name", ""),
-                url=r.get("html_url", ""),
-                description=r.get("description"),
-                is_fork=bool(r.get("fork")),
-                is_private=bool(r.get("private")),
-                is_archived=bool(r.get("archived")),
-                stars=r.get("stargazers_count") or 0,
-                forks=r.get("forks_count") or 0,
-                watchers=r.get("watchers_count") or 0,
-                open_issues=r.get("open_issues_count") or 0,
-                primary_language=r.get("language"),
-                default_branch=r.get("default_branch"),
-                created_at=r.get("created_at"),
-                updated_at=r.get("updated_at"),
-                pushed_at=r.get("pushed_at"),
-            )
-            for r in items
-        ]
+        return [self._to_repo(r) for r in items]
+
+    @staticmethod
+    def _to_repo(r: dict[str, Any]) -> RepoData:
+        """Map a REST repository payload. Shared by the account and organisation listings."""
+        return RepoData(
+            name=r.get("name", ""),
+            full_name=r.get("full_name", ""),
+            url=r.get("html_url", ""),
+            description=r.get("description"),
+            is_fork=bool(r.get("fork")),
+            is_private=bool(r.get("private")),
+            is_archived=bool(r.get("archived")),
+            stars=r.get("stargazers_count") or 0,
+            forks=r.get("forks_count") or 0,
+            watchers=r.get("watchers_count") or 0,
+            open_issues=r.get("open_issues_count") or 0,
+            primary_language=r.get("language"),
+            default_branch=r.get("default_branch"),
+            created_at=r.get("created_at"),
+            updated_at=r.get("updated_at"),
+            pushed_at=r.get("pushed_at"),
+        )
+
+    async def _async_fetch_org_roles(self) -> dict[str, bool]:
+        """Map org login -> whether this account administers it.
+
+        One paginated call covers every membership, so ownership is known without a
+        per-organisation request.
+        """
+        roles: dict[str, bool] = {}
+        if not self.api_token:
+            return roles
+
+        for m in await self._async_all_pages("/user/memberships/orgs"):
+            login = (m.get("organization") or {}).get("login")
+            if login:
+                roles[login] = m.get("role") == "admin"
+        return roles
 
     async def _async_fetch_orgs(self) -> list[OrgData]:
         """Org memberships. Authenticated listing includes private/hidden memberships."""
         endpoint = "/user/orgs" if self.api_token else f"/users/{self.account_name}/orgs"
+
+        roles: dict[str, bool] = {}
+        with contextlib.suppress(Exception):
+            roles = await self._async_fetch_org_roles()
+
         return [
             OrgData(
                 name=o.get("login", ""),
@@ -471,9 +537,30 @@ class GitHubProvider(BaseDevCloudProvider):
                 avatar_url=o.get("avatar_url"),
                 url=f"https://github.com/{o.get('login')}",
                 description=o.get("description"),
+                is_owned=roles.get(o.get("login", "")),
             )
             for o in await self._async_all_pages(endpoint)
         ]
+
+    async def _async_fetch_org_repos(self, orgs: list[OrgData]) -> dict[str, list[RepoData]]:
+        """Every repository belonging to each organisation, keyed by org name."""
+
+        async def _fetch(org: OrgData) -> tuple[str, list[RepoData]]:
+            items = await self._async_all_pages(
+                f"/orgs/{org.name}/repos", params={"sort": "pushed"}
+            )
+            return org.name, [self._to_repo(r) for r in items]
+
+        results = await async_map_limited(orgs, _fetch, RUNNING_JOBS_CONCURRENCY)
+
+        by_org: dict[str, list[RepoData]] = {}
+        for result in results:
+            if isinstance(result, BaseException):
+                _LOGGER.debug("Org repository listing failed: %s", result)
+                continue
+            name, repos = result
+            by_org[name] = repos
+        return by_org
 
     async def _async_fetch_pastes(self) -> list[PasteData]:
         """Gists. `/gists` includes private and secret gists when authenticated."""
@@ -558,6 +645,15 @@ class GitHubProvider(BaseDevCloudProvider):
         )
         repos = await self.async_resource("repos", self._async_fetch_repos, [])
         orgs = await self.async_resource("orgs", self._async_fetch_orgs, [])
+
+        # Attach each organisation's repositories. Whether they feed the account totals is
+        # decided per entry by CONF_INCLUDE_NON_OWNED_ORGS, applied in sensor.py — the
+        # snapshot always carries the full picture.
+        org_repos = await self.async_resource(
+            "org_repos", lambda: self._async_fetch_org_repos(orgs), {}
+        )
+        for org in orgs:
+            org.repos = org_repos.get(org.name, org.repos)
         pastes = await self.async_resource("pastes", self._async_fetch_pastes, [])
         notifications = await self.async_resource(
             "notifications", self._async_fetch_notifications, []
@@ -570,6 +666,9 @@ class GitHubProvider(BaseDevCloudProvider):
             "sponsors", self._async_fetch_sponsors, (None, None)
         )
         releases = await self.async_resource("releases", self._async_fetch_all_releases, [])
+        releases = releases + await self.async_resource(
+            "org_releases", lambda: self._async_fetch_org_releases(orgs), []
+        )
         running_jobs_count, running_jobs = await self.async_resource(
             "running_jobs", lambda: self._async_fetch_running_jobs(repos), (None, [])
         )

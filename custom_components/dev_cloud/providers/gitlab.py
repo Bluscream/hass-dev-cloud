@@ -8,7 +8,7 @@ from typing import Any
 
 from ..const import PLATFORM_GITLAB, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
 from ..models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
-from .base import BaseDevCloudProvider, async_collect_running_jobs
+from .base import BaseDevCloudProvider, async_collect_running_jobs, async_map_limited
 from .scheduling import ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,6 +29,8 @@ class GitLabProvider(BaseDevCloudProvider):
         "repos": ResourcePolicy(authenticated=900, anonymous=3600),
         "pastes": ResourcePolicy(authenticated=1800, anonymous=3600),
         "orgs": ResourcePolicy(authenticated=3600, anonymous=None),
+        # Fans out over every group, so it shares the slow org cadence.
+        "org_repos": ResourcePolicy(authenticated=3600, anonymous=None),
         "notifications": ResourcePolicy(authenticated=300, anonymous=None),
         "running_jobs": ResourcePolicy(authenticated=300, anonymous=900),
     }
@@ -133,35 +135,34 @@ class GitLabProvider(BaseDevCloudProvider):
     async def _async_fetch_repos(self) -> list[RepoData]:
         """Every project owned by the user."""
         url = f"{self.base_url}/api/v4/users/{self._user_id}/projects?order_by=updated_at"
-        repos: list[RepoData] = []
+        return [self._to_repo(p) for p in await self.async_get_all_pages(url)]
 
-        for p in await self.async_get_all_pages(url):
-            fork_source = p.get("forked_from_project", {})
-            repos.append(
-                RepoData(
-                    name=p.get("name", ""),
-                    full_name=p.get("path_with_namespace", p.get("name", "")),
-                    url=p.get("web_url", ""),
-                    description=p.get("description"),
-                    is_fork=bool(fork_source),
-                    is_private=p.get("visibility") == "private",
-                    is_archived=bool(p.get("archived")),
-                    stars=p.get("star_count", 0),
-                    forks=p.get("forks_count", 0),
-                    open_issues=p.get("open_issues_count", 0),
-                    default_branch=p.get("default_branch"),
-                    created_at=p.get("created_at"),
-                    updated_at=p.get("last_activity_at"),
-                    upstream=fork_source.get("web_url") if fork_source else None,
-                    extra={
-                        "project_id": p.get("id"),
-                        # Needed to skip projects without CI when polling pipelines.
-                        "builds_access_level": p.get("builds_access_level"),
-                        "jobs_enabled": p.get("jobs_enabled"),
-                    },
-                )
-            )
-        return repos
+    @staticmethod
+    def _to_repo(p: dict[str, Any]) -> RepoData:
+        """Map a GitLab project payload. Shared by the user and group listings."""
+        fork_source = p.get("forked_from_project", {})
+        return RepoData(
+            name=p.get("name", ""),
+            full_name=p.get("path_with_namespace", p.get("name", "")),
+            url=p.get("web_url", ""),
+            description=p.get("description"),
+            is_fork=bool(fork_source),
+            is_private=p.get("visibility") == "private",
+            is_archived=bool(p.get("archived")),
+            stars=p.get("star_count", 0),
+            forks=p.get("forks_count", 0),
+            open_issues=p.get("open_issues_count", 0),
+            default_branch=p.get("default_branch"),
+            created_at=p.get("created_at"),
+            updated_at=p.get("last_activity_at"),
+            upstream=fork_source.get("web_url") if fork_source else None,
+            extra={
+                "project_id": p.get("id"),
+                # Needed to skip projects without CI when polling pipelines.
+                "builds_access_level": p.get("builds_access_level"),
+                "jobs_enabled": p.get("jobs_enabled"),
+            },
+        )
 
     async def _async_fetch_pastes(self) -> list[PasteData]:
         url = f"{self.base_url}/api/v4/users/{self._user_id}/snippets"
@@ -191,6 +192,24 @@ class GitLabProvider(BaseDevCloudProvider):
             )
             for g in await self.async_get_all_pages(f"{self.base_url}/api/v4/groups")
         ]
+
+    async def _async_fetch_org_repos(self, orgs: list[OrgData]) -> dict[str, list[RepoData]]:
+        """Every project belonging to each group, keyed by group name."""
+
+        async def _fetch(org: OrgData) -> tuple[str, list[RepoData]]:
+            url = f"{self.base_url}/api/v4/groups/{org.org_id}/projects"
+            return org.name, [self._to_repo(p) for p in await self.async_get_all_pages(url)]
+
+        results = await async_map_limited(orgs, _fetch, RUNNING_JOBS_CONCURRENCY)
+
+        by_org: dict[str, list[RepoData]] = {}
+        for result in results:
+            if isinstance(result, BaseException):
+                _LOGGER.debug("GitLab group project listing failed: %s", result)
+                continue
+            name, repos = result
+            by_org[name] = repos
+        return by_org
 
     async def _async_fetch_notifications(self) -> list[NotificationData]:
         """Pending todos, GitLab's equivalent of notifications."""
@@ -225,6 +244,11 @@ class GitLabProvider(BaseDevCloudProvider):
         repos = await self.async_resource("repos", self._async_fetch_repos, [])
         pastes = await self.async_resource("pastes", self._async_fetch_pastes, [])
         orgs = await self.async_resource("orgs", self._async_fetch_orgs, [])
+        org_repos = await self.async_resource(
+            "org_repos", lambda: self._async_fetch_org_repos(orgs), {}
+        )
+        for org in orgs:
+            org.repos = org_repos.get(org.name, org.repos)
         notifications = await self.async_resource(
             "notifications", self._async_fetch_notifications, []
         )

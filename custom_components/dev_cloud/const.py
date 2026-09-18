@@ -14,11 +14,15 @@ CONF_INSTANCE_URL: Final = "instance_url"
 CONF_API_TOKEN: Final = "api_token"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_ENABLE_EVENTS: Final = "enable_events"
+CONF_INCLUDE_NON_OWNED_ORGS: Final = "include_non_owned_orgs"
 
 # Default values
 DEFAULT_SCAN_INTERVAL_AUTHENTICATED: Final = 600  # 10 minutes
 DEFAULT_SCAN_INTERVAL_ANONYMOUS: Final = 1800  # 30 minutes
 DEFAULT_ENABLE_EVENTS: Final = True
+# Off by default: most org memberships are in somebody else's organisation, and folding
+# their repositories into the account's totals makes those totals describe other people.
+DEFAULT_INCLUDE_NON_OWNED_ORGS: Final = False
 MIN_SCAN_INTERVAL: Final = 60
 
 # Running CI jobs have to be queried per repository on every forge, so the fan-out is capped

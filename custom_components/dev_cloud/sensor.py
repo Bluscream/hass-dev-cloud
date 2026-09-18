@@ -27,6 +27,35 @@ from . import DevCloudConfigEntry
 from .const import PLATFORM_ICONS
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
+from .models import RepoData
+
+
+def counted_repos(coordinator: DevCloudCoordinator) -> list[RepoData]:
+    """The account's own repositories plus those of organisations that count toward totals.
+
+    Which organisations count is the entry's `include_non_owned_orgs` option: with it off
+    (the default) only orgs the account owns contribute, so the totals describe the user
+    rather than every organisation they happen to belong to.
+    """
+    data = coordinator.data
+    if data is None:
+        return []
+
+    repos = list(data.repos)
+    for org in data.orgs:
+        if coordinator.include_non_owned_orgs or org.is_owned:
+            repos.extend(org.repos)
+    return repos
+
+
+def counted_releases(coordinator: DevCloudCoordinator) -> list[dict[str, Any]]:
+    """Releases belonging to repositories that count toward the totals."""
+    data = coordinator.data
+    if data is None:
+        return []
+
+    allowed = {r.full_name for r in counted_repos(coordinator)}
+    return [r for r in data.releases if r.get("repository") in allowed]
 
 
 async def async_setup_entry(
@@ -64,13 +93,14 @@ async def async_setup_entry(
     if data.open_prs:
         entities.append(DevCloudOpenPullRequestsSensor(coordinator))
 
-    if any(r.stars for r in repos) or any(p.star_count for p in packages):
+    counted = counted_repos(coordinator)
+    if any(r.stars for r in counted) or any(p.star_count for p in packages):
         entities.append(DevCloudStarsSensor(coordinator))
 
-    if any(r.watchers for r in repos):
+    if any(r.watchers for r in counted):
         entities.append(DevCloudWatchersSensor(coordinator))
 
-    if any(r.forks for r in repos):
+    if any(r.forks for r in counted):
         entities.append(DevCloudForksSensor(coordinator))
 
     if data.releases:
@@ -178,13 +208,17 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
         repos = self.coordinator.data.repos
+        counted = counted_repos(self.coordinator)
         attrs = {
             "total_repositories": self.native_value,
             "public_repositories": sum(1 for r in repos if not r.is_private),
             "private_repositories": sum(1 for r in repos if r.is_private),
-            "total_stars": sum(r.stars for r in repos),
-            "total_forks": sum(r.forks for r in repos),
-            "total_watchers": sum(r.watchers for r in repos),
+            # Totals span the organisation repositories that count for this entry, so they
+            # can exceed total_repositories, which is the account's own repos alone.
+            "counted_repositories": len(counted),
+            "total_stars": sum(r.stars for r in counted),
+            "total_forks": sum(r.forks for r in counted),
+            "total_watchers": sum(r.watchers for r in counted),
         }
         return {k: v for k, v in attrs.items() if v is not None}
 
@@ -211,8 +245,15 @@ class DevCloudOrganizationsSensor(DevCloudBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
+        orgs = self.coordinator.data.orgs
+        owned = [o for o in orgs if o.is_owned]
         return {
-            "total_organizations": len(self.coordinator.data.orgs),
+            "total_organizations": len(orgs),
+            "owned_organizations": len(owned),
+            "total_organization_repositories": sum(len(o.repos) for o in orgs),
+            "counted_organization_repositories": sum(
+                len(o.repos) for o in orgs if self.coordinator.include_non_owned_orgs or o.is_owned
+            ),
         }
 
 
@@ -386,7 +427,7 @@ class DevCloudStarsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(r.stars for r in self.coordinator.data.repos)
+        return sum(r.stars for r in counted_repos(self.coordinator))
 
 
 class DevCloudWatchersSensor(DevCloudBaseEntity, SensorEntity):
@@ -405,7 +446,7 @@ class DevCloudWatchersSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(r.watchers for r in self.coordinator.data.repos)
+        return sum(r.watchers for r in counted_repos(self.coordinator))
 
 
 class DevCloudForksSensor(DevCloudBaseEntity, SensorEntity):
@@ -424,7 +465,7 @@ class DevCloudForksSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(r.forks for r in self.coordinator.data.repos)
+        return sum(r.forks for r in counted_repos(self.coordinator))
 
 
 class DevCloudPullsSensor(DevCloudBaseEntity, SensorEntity):
@@ -469,7 +510,7 @@ class DevCloudReleasesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return len(self.coordinator.data.releases)
+        return len(counted_releases(self.coordinator))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -494,7 +535,7 @@ class DevCloudReleaseAssetsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(len(r.get("assets", ())) for r in self.coordinator.data.releases)
+        return sum(len(r.get("assets", ())) for r in counted_releases(self.coordinator))
 
 
 class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
@@ -515,7 +556,7 @@ class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
             return None
         return sum(
             asset.get("downloads", 0)
-            for release in self.coordinator.data.releases
+            for release in counted_releases(self.coordinator)
             for asset in release.get("assets", ())
         )
 

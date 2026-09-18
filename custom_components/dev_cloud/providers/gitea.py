@@ -7,7 +7,7 @@ from typing import Any
 
 from ..const import PLATFORM_GITEA, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
 from ..models import DevCloudData, NotificationData, OrgData, ProfileData, RepoData
-from .base import BaseDevCloudProvider, async_collect_running_jobs
+from .base import BaseDevCloudProvider, async_collect_running_jobs, async_map_limited
 from .scheduling import ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,6 +27,8 @@ class GiteaProvider(BaseDevCloudProvider):
         "profile": ResourcePolicy(authenticated=600, anonymous=1800),
         "repos": ResourcePolicy(authenticated=900, anonymous=3600),
         "orgs": ResourcePolicy(authenticated=3600, anonymous=7200),
+        # Fans out over every organisation, so it shares the slow org cadence.
+        "org_repos": ResourcePolicy(authenticated=3600, anonymous=7200),
         "notifications": ResourcePolicy(authenticated=300, anonymous=None),
         "running_jobs": ResourcePolicy(authenticated=300, anonymous=None),
     }
@@ -108,32 +110,35 @@ class GiteaProvider(BaseDevCloudProvider):
         repos: list[RepoData] = []
 
         for r in await self.async_get_all_pages(url, size_param="limit"):
-            upstream = None
-            if r.get("fork") and r.get("parent"):
-                upstream = r["parent"].get("html_url")
-            repos.append(
-                RepoData(
-                    name=r.get("name", ""),
-                    full_name=r.get("full_name", ""),
-                    url=r.get("html_url", ""),
-                    description=r.get("description"),
-                    is_fork=bool(r.get("fork")),
-                    is_private=bool(r.get("private")),
-                    is_archived=bool(r.get("archived")),
-                    stars=r.get("stars_count", 0),
-                    forks=r.get("forks_count", 0),
-                    watchers=r.get("watchers_count", 0),
-                    open_issues=r.get("open_issues_count", 0),
-                    primary_language=r.get("language"),
-                    default_branch=r.get("default_branch"),
-                    created_at=r.get("created_at"),
-                    updated_at=r.get("updated_at"),
-                    upstream=upstream,
-                    # has_actions exists from Gitea 1.21 / Forgejo 1.21 onwards.
-                    extra={"has_actions": r.get("has_actions")},
-                )
-            )
+            repos.append(self._to_repo(r))
         return repos
+
+    @staticmethod
+    def _to_repo(r: dict[str, Any]) -> RepoData:
+        """Map a Gitea repository payload. Shared by the user and organisation listings."""
+        upstream = None
+        if r.get("fork") and r.get("parent"):
+            upstream = r["parent"].get("html_url")
+        return RepoData(
+            name=r.get("name", ""),
+            full_name=r.get("full_name", ""),
+            url=r.get("html_url", ""),
+            description=r.get("description"),
+            is_fork=bool(r.get("fork")),
+            is_private=bool(r.get("private")),
+            is_archived=bool(r.get("archived")),
+            stars=r.get("stars_count", 0),
+            forks=r.get("forks_count", 0),
+            watchers=r.get("watchers_count", 0),
+            open_issues=r.get("open_issues_count", 0),
+            primary_language=r.get("language"),
+            default_branch=r.get("default_branch"),
+            created_at=r.get("created_at"),
+            updated_at=r.get("updated_at"),
+            upstream=upstream,
+            # has_actions exists from Gitea 1.21 / Forgejo 1.21 onwards.
+            extra={"has_actions": r.get("has_actions")},
+        )
 
     async def _async_fetch_orgs(self) -> list[OrgData]:
         url = f"{self.base_url}/api/v1/users/{self.account_name}/orgs"
@@ -148,6 +153,25 @@ class GiteaProvider(BaseDevCloudProvider):
             )
             for o in await self.async_get_all_pages(url, size_param="limit")
         ]
+
+    async def _async_fetch_org_repos(self, orgs: list[OrgData]) -> dict[str, list[RepoData]]:
+        """Every repository belonging to each organisation, keyed by org name."""
+
+        async def _fetch(org: OrgData) -> tuple[str, list[RepoData]]:
+            url = f"{self.base_url}/api/v1/orgs/{org.name}/repos"
+            items = await self.async_get_all_pages(url, size_param="limit")
+            return org.name, [self._to_repo(r) for r in items]
+
+        results = await async_map_limited(orgs, _fetch, RUNNING_JOBS_CONCURRENCY)
+
+        by_org: dict[str, list[RepoData]] = {}
+        for result in results:
+            if isinstance(result, BaseException):
+                _LOGGER.debug("Gitea org repository listing failed: %s", result)
+                continue
+            name, repos = result
+            by_org[name] = repos
+        return by_org
 
     async def _async_fetch_notifications(self) -> list[NotificationData]:
         url = f"{self.base_url}/api/v1/notifications"
@@ -176,6 +200,11 @@ class GiteaProvider(BaseDevCloudProvider):
         )
         repos = await self.async_resource("repos", self._async_fetch_repos, [])
         orgs = await self.async_resource("orgs", self._async_fetch_orgs, [])
+        org_repos = await self.async_resource(
+            "org_repos", lambda: self._async_fetch_org_repos(orgs), {}
+        )
+        for org in orgs:
+            org.repos = org_repos.get(org.name, org.repos)
         notifications = await self.async_resource(
             "notifications", self._async_fetch_notifications, []
         )

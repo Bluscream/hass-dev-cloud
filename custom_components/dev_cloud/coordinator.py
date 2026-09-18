@@ -14,10 +14,12 @@ from .const import (
     CONF_ACCOUNT_NAME,
     CONF_API_TOKEN,
     CONF_ENABLE_EVENTS,
+    CONF_INCLUDE_NON_OWNED_ORGS,
     CONF_INSTANCE_URL,
     CONF_PLATFORM,
     CONF_SCAN_INTERVAL,
     DEFAULT_ENABLE_EVENTS,
+    DEFAULT_INCLUDE_NON_OWNED_ORGS,
     DEFAULT_SCAN_INTERVAL_ANONYMOUS,
     DEFAULT_SCAN_INTERVAL_AUTHENTICATED,
     DOMAIN,
@@ -49,6 +51,10 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         scan_interval = entry.options.get(CONF_SCAN_INTERVAL, default_interval)
 
         self.enable_events: bool = entry.options.get(CONF_ENABLE_EVENTS, DEFAULT_ENABLE_EVENTS)
+        # When False, only organisations this account owns contribute to the totals.
+        self.include_non_owned_orgs: bool = entry.options.get(
+            CONF_INCLUDE_NON_OWNED_ORGS, DEFAULT_INCLUDE_NON_OWNED_ORGS
+        )
 
         session = async_get_clientsession(hass)
         self.provider = get_provider(

@@ -39,6 +39,11 @@ class OrgData:
     avatar_url: str | None = None
     url: str | None = None
     description: str | None = None
+    # True when the account owns/administers the org, False when it is only a member, and
+    # None when the platform does not expose a role. Drives whether this org's repositories
+    # feed the account totals (see CONF_INCLUDE_NON_OWNED_ORGS).
+    is_owned: bool | None = None
+    repos: list[RepoData] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
