@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
+from yarl import URL
+
 from ..const import PLATFORM_NUGET
 from ..models import DevCloudData, PackageData, ProfileData
 from .base import BaseDevCloudProvider
@@ -20,7 +22,7 @@ class NuGetProvider(BaseDevCloudProvider):
     default_base_url = "https://azuresearch-usnc.nuget.org"
     supports_custom_url = False
 
-    SEARCH_URL = "https://azuresearch-usnc.nuget.org"
+    SEARCH_URL = URL("https://azuresearch-usnc.nuget.org")
 
     # The NuGet search index is a public CDN; download counts update on its own schedule,
     # so polling faster than this only re-reads the same numbers.
@@ -46,7 +48,9 @@ class NuGetProvider(BaseDevCloudProvider):
         The search index only knows accounts that have published, so an account with no
         packages yet is confirmed via its nuget.org profile instead.
         """
-        search_url = f"{self.SEARCH_URL}/query?q=owner:{self.account_name}&take=1"
+        search_url = (self.SEARCH_URL / "query").with_query(
+            {"q": f"owner:{self.account_name}", "take": 1}
+        )
         try:
             data, _ = await self.async_get_json(search_url, use_etag=False)
             if isinstance(data, dict) and "data" in data and data.get("totalHits", 0) > 0:
@@ -70,8 +74,12 @@ class NuGetProvider(BaseDevCloudProvider):
 
     async def _async_fetch_packages(self) -> list[PackageData]:
         """Every package owned by the account, following NuGet's `skip` offset paging."""
-        search_base = self.base_url if "azuresearch" in self.base_url else self.SEARCH_URL
-        url = f"{search_base}/query?q=owner:{self.account_name}&prerelease=true"
+        search_base = (
+            self.base_url if "azuresearch" in (self.base_url.host or "") else self.SEARCH_URL
+        )
+        url = (search_base / "query").with_query(
+            {"q": f"owner:{self.account_name}", "prerelease": "true"}
+        )
 
         items = await self.async_get_all_offset(
             url,

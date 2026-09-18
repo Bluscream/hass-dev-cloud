@@ -6,6 +6,7 @@ Home Assistant.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 
 from dev_cloud import sensor, storage
@@ -128,3 +129,43 @@ def test_rate_limit_observation_reads_present_headers() -> None:
 
     provider._observe_rate_limit(_Response())
     assert observed == [(4321, 1789750000.0)]
+
+
+def test_provider_base_urls_are_url_objects() -> None:
+    """Endpoints are built by joining, not by formatting strings together."""
+    import aiohttp
+    from yarl import URL
+
+    from dev_cloud.providers import PROVIDER_REGISTRY
+
+    async def check() -> None:
+        async with aiohttp.ClientSession() as session:
+            for platform, cls in PROVIDER_REGISTRY.items():
+                provider = cls(session=session, account_name="x", base_url=None, api_token=None)
+                assert isinstance(provider.base_url, URL), platform
+
+    asyncio.run(check())
+
+
+def test_account_names_cannot_break_out_of_a_query_string() -> None:
+    """An account name with & or = used to be interpolated straight into the query,
+    letting it inject or truncate parameters."""
+    from yarl import URL
+
+    hostile = "victim&admin=true"
+    url = (URL("https://gitlab.com") / "api/v4/users").with_query({"username": hostile})
+
+    assert url.query["username"] == hostile
+    assert "admin" not in url.query
+    assert "&admin=true" not in str(url)
+
+
+def test_paginating_a_url_that_already_has_query_parameters_replaces_them() -> None:
+    """String concatenation appended a second `page=`, leaving the server to pick one."""
+    from yarl import URL
+
+    url = (URL("https://gitea.example") / "repos").with_query({"page": 1, "limit": 10})
+    paged = url.update_query({"limit": 100, "page": 3})
+
+    assert paged.query.getall("page") == ["3"]
+    assert paged.query.getall("limit") == ["100"]

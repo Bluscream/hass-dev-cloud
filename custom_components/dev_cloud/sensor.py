@@ -97,7 +97,7 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             "rate_limit_reset": data.rate_limit_reset,
             # The account's full JSON snapshot. Lives only here: it is the same URL for
             # every entity on this account, so repeating it on each one is pure noise.
-            "json_url": self.coordinator.json_url,
+            "json_url": str(self.coordinator.json_url),
             # Effective refresh interval and measured request cost per resource, so the
             # adaptive scheduler's choices are visible without reading the JSON dump.
             "scheduling": data.scheduling or None,

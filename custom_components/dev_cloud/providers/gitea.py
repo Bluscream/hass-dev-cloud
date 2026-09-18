@@ -40,7 +40,7 @@ class GiteaProvider(BaseDevCloudProvider):
         return headers
 
     async def async_validate(self) -> bool:
-        url = f"{self.base_url}/api/v1/users/{self.account_name}"
+        url = self.base_url / "api/v1/users" / self.account_name
         data, _ = await self.async_get_json(url, use_etag=False)
         return bool(data and data.get("username"))
 
@@ -65,7 +65,9 @@ class GiteaProvider(BaseDevCloudProvider):
         ]
 
         async def _fetch(repo: RepoData) -> list[dict[str, Any]]:
-            url = f"{self.base_url}/api/v1/repos/{repo.full_name}/actions/runs?status=running"
+            url = (self.base_url / "api/v1/repos" / repo.full_name / "actions/runs").with_query(
+                {"status": "running"}
+            )
             payload, _ = await self.async_get_json(url, use_etag=False)
             if not isinstance(payload, dict):
                 return []
@@ -87,7 +89,7 @@ class GiteaProvider(BaseDevCloudProvider):
         return await async_collect_running_jobs(candidates, _fetch, RUNNING_JOBS_CONCURRENCY)
 
     async def _async_fetch_profile(self) -> ProfileData:
-        user_url = f"{self.base_url}/api/v1/users/{self.account_name}"
+        user_url = self.base_url / "api/v1/users" / self.account_name
         u, _ = await self.async_get_json(user_url)
 
         return ProfileData(
@@ -95,7 +97,7 @@ class GiteaProvider(BaseDevCloudProvider):
             display_name=u.get("full_name"),
             user_id=u.get("id"),
             avatar_url=u.get("avatar_url"),
-            profile_url=f"{self.base_url}/{u.get('username', self.account_name)}",
+            profile_url=str(self.base_url / str(u.get("username", self.account_name))),
             bio=u.get("description"),
             location=u.get("location"),
             blog=u.get("website"),
@@ -106,7 +108,7 @@ class GiteaProvider(BaseDevCloudProvider):
         )
 
     async def _async_fetch_repos(self) -> list[RepoData]:
-        url = f"{self.base_url}/api/v1/users/{self.account_name}/repos"
+        url = self.base_url / "api/v1/users" / self.account_name / "repos"
         repos: list[RepoData] = []
 
         for r in await self.async_get_all_pages(url, size_param="limit"):
@@ -141,14 +143,14 @@ class GiteaProvider(BaseDevCloudProvider):
         )
 
     async def _async_fetch_orgs(self) -> list[OrgData]:
-        url = f"{self.base_url}/api/v1/users/{self.account_name}/orgs"
+        url = self.base_url / "api/v1/users" / self.account_name / "orgs"
         return [
             OrgData(
                 name=o.get("username", ""),
                 org_id=o.get("id"),
                 display_name=o.get("full_name"),
                 avatar_url=o.get("avatar_url"),
-                url=f"{self.base_url}/{o.get('username')}",
+                url=str(self.base_url / str(o.get("username", ""))),
                 description=o.get("description"),
             )
             for o in await self.async_get_all_pages(url, size_param="limit")
@@ -158,7 +160,7 @@ class GiteaProvider(BaseDevCloudProvider):
         """Every repository belonging to each organisation, keyed by org name."""
 
         async def _fetch(org: OrgData) -> tuple[str, list[RepoData]]:
-            url = f"{self.base_url}/api/v1/orgs/{org.name}/repos"
+            url = self.base_url / "api/v1/orgs" / org.name / "repos"
             items = await self.async_get_all_pages(url, size_param="limit")
             return org.name, [self._to_repo(r) for r in items]
 
@@ -174,7 +176,7 @@ class GiteaProvider(BaseDevCloudProvider):
         return by_org
 
     async def _async_fetch_notifications(self) -> list[NotificationData]:
-        url = f"{self.base_url}/api/v1/notifications"
+        url = self.base_url / "api/v1/notifications"
         notifications: list[NotificationData] = []
 
         for n in await self.async_get_all_pages(url, size_param="limit"):

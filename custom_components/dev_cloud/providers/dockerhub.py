@@ -52,7 +52,7 @@ class DockerHubProvider(BaseDevCloudProvider):
         if self._jwt_token:
             return self._jwt_token
 
-        login_url = f"{self.base_url}/v2/users/login"
+        login_url = self.base_url / "v2/users/login"
         payload = {"username": self.account_name, "password": self.api_token}
         try:
             async with self.session.post(login_url, json=payload) as resp:
@@ -83,17 +83,17 @@ class DockerHubProvider(BaseDevCloudProvider):
             await self._async_ensure_jwt_token()
 
         # Validate that the user or org exists
-        url = f"{self.base_url}/v2/orgs/{self.account_name}"
+        url = self.base_url / "v2/orgs" / self.account_name
         try:
             data, _ = await self.async_get_json(url, use_etag=False)
             return bool(data)
         except DevCloudNotFoundError:
-            user_url = f"{self.base_url}/v2/users/{self.account_name}"
+            user_url = self.base_url / "v2/users" / self.account_name
             data, _ = await self.async_get_json(user_url, use_etag=False)
             return bool(data)
 
     async def _async_fetch_profile(self) -> ProfileData:
-        user_url = f"{self.base_url}/v2/users/{self.account_name}"
+        user_url = self.base_url / "v2/users" / self.account_name
         display_name = self.account_name
         avatar_url = None
         created_at = None
@@ -118,7 +118,7 @@ class DockerHubProvider(BaseDevCloudProvider):
 
     async def _async_fetch_packages(self) -> tuple[list[PackageData], list[RepoData]]:
         """Every image in the namespace, as both a package and a repository entry."""
-        url = f"{self.base_url}/v2/namespaces/{self.account_name}/repositories"
+        url = self.base_url / "v2/namespaces" / self.account_name / "repositories"
         packages: list[PackageData] = []
         repos: list[RepoData] = []
 

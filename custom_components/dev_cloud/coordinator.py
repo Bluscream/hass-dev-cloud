@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from yarl import URL
 
 from .const import (
     CONF_ACCOUNT_NAME,
@@ -67,7 +68,7 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
 
         # Public URL of this account's full JSON snapshot, exposed on every sensor so the
         # bulky lists stripped from state attributes stay reachable.
-        self.json_url: str = build_json_url(self.platform_id, self.account_name)
+        self.json_url: URL = build_json_url(self.platform_id, self.account_name)
 
         self._previous_repos: set[str] = set()
         self._previous_packages: set[str] = set()

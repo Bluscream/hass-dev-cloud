@@ -33,13 +33,13 @@ class PyPIProvider(BaseDevCloudProvider):
 
     async def async_validate(self) -> bool:
         # PyPI user page check
-        url = f"{self.base_url}/user/{self.account_name}/"
+        url = self.base_url / "user" / self.account_name / ""
         async with self.session.get(url, headers=self.get_headers()) as resp:
             return resp.status == 200
 
     async def _async_fetch_packages(self) -> list[PackageData]:
         """Scrape the profile page for project links."""
-        user_url = f"{self.base_url}/user/{self.account_name}/"
+        user_url = self.base_url / "user" / self.account_name / ""
 
         self.request_count += 1
         async with self.session.get(user_url, headers=self.get_headers()) as resp:

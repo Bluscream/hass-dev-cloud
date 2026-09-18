@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ClassVar, cast
 
 from aiohttp import ClientSession
+from yarl import URL
 
 from ..models import DevCloudData
 from .scheduling import PageWalker, ResourcePolicy, ResourceScheduler
@@ -103,7 +104,9 @@ class BaseDevCloudProvider(ABC):
     ) -> None:
         self.session = session
         self.account_name = account_name.strip()
-        self.base_url = (base_url or self.default_base_url).rstrip("/")
+        # Parsed once at the boundary; every endpoint is built from it with yarl's
+        # joining and query helpers rather than string formatting.
+        self.base_url = URL(base_url or self.default_base_url)
         self.api_token = api_token.strip() if api_token else None
         # In-memory conditional request caching & TTL caching
         self._etags: dict[str, str] = {}
@@ -168,7 +171,7 @@ class BaseDevCloudProvider(ABC):
 
     async def async_get_json(
         self,
-        endpoint_url: str,
+        endpoint_url: URL,
         headers: dict[str, str] | None = None,
         use_etag: bool = True,
     ) -> tuple[Any, dict[str, str]]:
@@ -177,15 +180,16 @@ class BaseDevCloudProvider(ABC):
         if headers:
             req_headers.update(headers)
 
-        if use_etag and endpoint_url in self._etags:
-            req_headers["If-None-Match"] = self._etags[endpoint_url]
+        cache_key = str(endpoint_url)
+        if use_etag and cache_key in self._etags:
+            req_headers["If-None-Match"] = self._etags[cache_key]
 
         self.request_count += 1
         async with self.session.get(endpoint_url, headers=req_headers) as response:
             resp_headers = dict(response.headers)
             if response.status == 304:
                 # Content not modified; reuse cached payload
-                return self._cached_responses.get(endpoint_url), resp_headers
+                return self._cached_responses.get(cache_key), resp_headers
 
             if response.status in (401, 403):
                 # Check for rate limiting
@@ -206,14 +210,14 @@ class BaseDevCloudProvider(ABC):
             data = await response.json()
 
             if use_etag and "ETag" in resp_headers:
-                self._etags[endpoint_url] = resp_headers["ETag"]
-                self._cached_responses[endpoint_url] = data
+                self._etags[cache_key] = resp_headers["ETag"]
+                self._cached_responses[cache_key] = data
 
             return data, resp_headers
 
     async def async_get_all_pages(
         self,
-        url: str,
+        url: URL,
         page_size: int = 100,
         page_param: str = "page",
         size_param: str = "per_page",
@@ -229,12 +233,11 @@ class BaseDevCloudProvider(ABC):
         ``extract`` pulls the item list out of an envelope response (Docker Hub's
         ``{"results": [...]}``); omit it for endpoints that return a bare array.
         """
-        separator = "&" if "?" in url else "?"
-        walker = PageWalker(url, page_size)
+        walker = PageWalker(str(url), page_size)
         items: list[Any] = []
 
         for page in range(first_page, first_page + MAX_PAGES):
-            page_url = f"{url}{separator}{size_param}={page_size}&{page_param}={page}"
+            page_url = url.update_query({size_param: page_size, page_param: page})
             payload, _ = await self.async_get_json(page_url, use_etag=False)
 
             batch = extract(payload) if extract else payload
@@ -255,7 +258,7 @@ class BaseDevCloudProvider(ABC):
 
     async def async_get_all_offset(
         self,
-        url: str,
+        url: URL,
         extract: Callable[[Any], list[Any]],
         page_size: int,
         offset_param: str = "from",
@@ -266,13 +269,11 @@ class BaseDevCloudProvider(ABC):
         The counterpart to `async_get_all_pages` for search APIs that take a starting
         offset rather than a page number.
         """
-        separator = "&" if "?" in url else "?"
-        walker = PageWalker(url, page_size)
+        walker = PageWalker(str(url), page_size)
         items: list[Any] = []
 
         for page in range(MAX_PAGES):
-            offset = page * page_size
-            page_url = f"{url}{separator}{size_param}={page_size}&{offset_param}={offset}"
+            page_url = url.update_query({size_param: page_size, offset_param: page * page_size})
             payload, _ = await self.async_get_json(page_url, use_etag=False)
 
             batch = extract(payload)

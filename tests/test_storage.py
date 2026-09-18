@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from dev_cloud import storage
+from yarl import URL
 from dev_cloud.models import DevCloudData, OrgData, ProfileData, RepoData
 
 
@@ -31,7 +32,14 @@ def test_slugify_account_is_path_safe(account: str, expected: str) -> None:
 
 
 def test_json_url_matches_slugified_path() -> None:
-    assert storage.build_json_url("github", "Bluscream") == "/local/dev/github/bluscream.json"
+    url = storage.build_json_url("github", "Bluscream")
+    assert isinstance(url, URL)
+    assert str(url) == "/local/dev/github/bluscream.json"
+
+
+def test_json_url_escapes_an_account_name_that_survives_slugification() -> None:
+    """Slugification already removes the dangerous characters; the URL type is the backstop."""
+    assert str(storage.build_json_url("github", "a b/c")) == "/local/dev/github/a_b_c.json"
 
 
 def test_serialize_drops_only_the_derivable_count() -> None:

@@ -49,7 +49,7 @@ class GitLabProvider(BaseDevCloudProvider):
         return headers
 
     async def async_validate(self) -> bool:
-        url = f"{self.base_url}/api/v4/users?username={self.account_name}"
+        url = (self.base_url / "api/v4/users").with_query({"username": self.account_name})
         data, _ = await self.async_get_json(url, use_etag=False)
         return bool(isinstance(data, list) and len(data) > 0)
 
@@ -71,7 +71,9 @@ class GitLabProvider(BaseDevCloudProvider):
 
         async def _fetch(repo: RepoData) -> list[dict[str, Any]]:
             project_id = repo.extra["project_id"]
-            url = f"{self.base_url}/api/v4/projects/{project_id}/pipelines?scope=running"
+            url = (self.base_url / "api/v4/projects" / str(project_id) / "pipelines").with_query(
+                {"scope": "running"}
+            )
             pipelines, _ = await self.async_get_json(url, use_etag=False)
             if not isinstance(pipelines, list):
                 return []
@@ -94,7 +96,7 @@ class GitLabProvider(BaseDevCloudProvider):
 
     async def _async_fetch_user_id(self) -> tuple[int | None, dict[str, Any]]:
         """Resolve the username to a numeric id, and return the raw user payload."""
-        users_url = f"{self.base_url}/api/v4/users?username={self.account_name}"
+        users_url = (self.base_url / "api/v4/users").with_query({"username": self.account_name})
         users_json, headers = await self.async_get_json(users_url)
 
         if not isinstance(users_json, list) or not users_json:
@@ -113,7 +115,9 @@ class GitLabProvider(BaseDevCloudProvider):
 
         # The detail endpoint adds bio/location/organization, but is not always permitted.
         with contextlib.suppress(Exception):
-            detail_json, _ = await self.async_get_json(f"{self.base_url}/api/v4/users/{user_id}")
+            detail_json, _ = await self.async_get_json(
+                self.base_url / "api/v4/users" / str(user_id)
+            )
             if isinstance(detail_json, dict):
                 u.update(detail_json)
 
@@ -134,7 +138,9 @@ class GitLabProvider(BaseDevCloudProvider):
 
     async def _async_fetch_repos(self) -> list[RepoData]:
         """Every project owned by the user."""
-        url = f"{self.base_url}/api/v4/users/{self._user_id}/projects?order_by=updated_at"
+        url = (self.base_url / "api/v4/users" / str(self._user_id) / "projects").with_query(
+            {"order_by": "updated_at"}
+        )
         return [self._to_repo(p) for p in await self.async_get_all_pages(url)]
 
     @staticmethod
@@ -165,7 +171,7 @@ class GitLabProvider(BaseDevCloudProvider):
         )
 
     async def _async_fetch_pastes(self) -> list[PasteData]:
-        url = f"{self.base_url}/api/v4/users/{self._user_id}/snippets"
+        url = self.base_url / "api/v4/users" / str(self._user_id) / "snippets"
         return [
             PasteData(
                 paste_id=str(s.get("id", "")),
@@ -190,14 +196,14 @@ class GitLabProvider(BaseDevCloudProvider):
                 url=g.get("web_url"),
                 description=g.get("description"),
             )
-            for g in await self.async_get_all_pages(f"{self.base_url}/api/v4/groups")
+            for g in await self.async_get_all_pages(self.base_url / "api/v4/groups")
         ]
 
     async def _async_fetch_org_repos(self, orgs: list[OrgData]) -> dict[str, list[RepoData]]:
         """Every project belonging to each group, keyed by group name."""
 
         async def _fetch(org: OrgData) -> tuple[str, list[RepoData]]:
-            url = f"{self.base_url}/api/v4/groups/{org.org_id}/projects"
+            url = self.base_url / "api/v4/groups" / str(org.org_id) / "projects"
             return org.name, [self._to_repo(p) for p in await self.async_get_all_pages(url)]
 
         # Group projects are addressed by numeric id; a group without one cannot be queried.
@@ -215,7 +221,7 @@ class GitLabProvider(BaseDevCloudProvider):
 
     async def _async_fetch_notifications(self) -> list[NotificationData]:
         """Pending todos, GitLab's equivalent of notifications."""
-        url = f"{self.base_url}/api/v4/todos?state=pending"
+        url = (self.base_url / "api/v4/todos").with_query({"state": "pending"})
         notifications: list[NotificationData] = []
 
         for t in await self.async_get_all_pages(url):

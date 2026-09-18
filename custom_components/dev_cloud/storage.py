@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from yarl import URL
 
 from .models import DevCloudData
 
@@ -72,9 +73,9 @@ def slugify_account(account: str) -> str:
     return slug or "account"
 
 
-def build_json_url(platform: str, account: str) -> str:
+def build_json_url(platform: str, account: str) -> URL:
     """Return the public ``/local`` URL of an account's JSON cache file."""
-    return f"/local/{WWW_SUBDIR}/{platform}/{slugify_account(account)}.json"
+    return URL("/local") / WWW_SUBDIR / platform / f"{slugify_account(account)}.json"
 
 
 def _build_json_path(hass: HomeAssistant, platform: str, account: str) -> Path:
@@ -89,7 +90,8 @@ def _serialize(platform: str, account: str, data: DevCloudData) -> dict[str, Any
         "platform": platform,
         "account": account,
         "fetched_at": datetime.now(UTC).isoformat(),
-        "json_url": build_json_url(platform, account),
+        # Serialized here because JSON is a wire format; the URL type is kept in-process.
+        "json_url": str(build_json_url(platform, account)),
         **snapshot,
     }
 

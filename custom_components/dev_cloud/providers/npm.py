@@ -31,13 +31,17 @@ class NPMProvider(BaseDevCloudProvider):
     SEARCH_PAGE_SIZE = 250
 
     async def async_validate(self) -> bool:
-        url = f"{self.base_url}/-/v1/search?text=maintainer:{self.account_name}&size=1"
+        url = (self.base_url / "-/v1/search").with_query(
+            {"text": f"maintainer:{self.account_name}", "size": 1}
+        )
         data, _ = await self.async_get_json(url, use_etag=False)
         return isinstance(data, dict) and "objects" in data
 
     async def _async_fetch_packages(self) -> list[PackageData]:
         """Every package the account maintains, following npm's `from` offset paging."""
-        url = f"{self.base_url}/-/v1/search?text=maintainer:{self.account_name}"
+        url = (self.base_url / "-/v1/search").with_query(
+            {"text": f"maintainer:{self.account_name}"}
+        )
         objects = await self.async_get_all_offset(
             url,
             extract=lambda p: p.get("objects", []) if isinstance(p, dict) else [],
@@ -68,7 +72,7 @@ class NPMProvider(BaseDevCloudProvider):
 
     async def _async_fetch_orgs(self) -> list[OrgData]:
         """Org memberships. Returns a single {org: role} mapping, so there is no paging."""
-        orgs_url = f"{self.base_url}/-/org/{self.account_name}/user"
+        orgs_url = self.base_url / "-/org" / self.account_name / "user"
         try:
             org_json, _ = await self.async_get_json(orgs_url)
         except Exception as err:
