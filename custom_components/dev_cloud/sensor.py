@@ -49,6 +49,9 @@ async def async_setup_entry(
     if coordinator.platform_id in FORGE_PLATFORMS:
         entities.append(DevCloudOpenIssuesSensor(coordinator))
         entities.append(DevCloudOpenPullRequestsSensor(coordinator))
+        entities.append(DevCloudStarsSensor(coordinator))
+        entities.append(DevCloudWatchersSensor(coordinator))
+        entities.append(DevCloudForksSensor(coordinator))
 
     # Add Packages sensor if platform has packages
     if coordinator.data and coordinator.data.packages:
@@ -406,3 +409,60 @@ class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
             "total_open_prs": self.native_value,
             "pull_requests": self.coordinator.data.open_prs,
         }
+
+
+class DevCloudStarsSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for stars across all repositories."""
+
+    _attr_icon = "mdi:star"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "stars"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "stars")
+        self._attr_name = "Stars"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return sum(r.stars for r in self.coordinator.data.repos)
+
+
+class DevCloudWatchersSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for watchers across all repositories."""
+
+    _attr_icon = "mdi:eye"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "watchers"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "watchers")
+        self._attr_name = "Watchers"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return sum(r.watchers for r in self.coordinator.data.repos)
+
+
+class DevCloudForksSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for forks across all repositories."""
+
+    _attr_icon = "mdi:source-fork"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "forks"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "forks")
+        self._attr_name = "Forks"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return sum(r.forks for r in self.coordinator.data.repos)
