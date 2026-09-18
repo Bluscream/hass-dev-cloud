@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import urllib.parse
 from typing import Any
 
@@ -56,6 +57,8 @@ from .providers import (
     DevCloudRateLimitError,
     get_provider,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -147,11 +150,19 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
                 except DevCloudProviderError:
                     errors["base"] = "cannot_connect"
                 except Exception as err:
-                    _LOGGER.exception("Unexpected error validating %s account %s: %s", platform, account, err)
+                    _LOGGER.exception(
+                        "Unexpected error validating %s account %s: %s", platform, account, err
+                    )
                     errors["base"] = "unknown"
 
                 if not errors:
-                    title = f"{SUPPORTED_PLATFORMS.get(platform, platform)} ({account})"
+                    if platform == PLATFORM_GITEA and instance_url:
+                        netloc = urllib.parse.urlparse(instance_url).netloc.split(":")[0]
+                        domain_slug = netloc.replace(".", "_").replace("-", "_").strip("_").lower()
+                        title = f"{domain_slug} {account}"
+                    else:
+                        title = f"{SUPPORTED_PLATFORMS.get(platform, platform)} ({account})"
+
                     data = {
                         CONF_PLATFORM: platform,
                         CONF_ACCOUNT_NAME: account,
