@@ -11,7 +11,7 @@ import inspect
 from dev_cloud import sensor, storage
 from dev_cloud.providers import PROVIDER_REGISTRY
 from dev_cloud.providers.base import BaseDevCloudProvider
-from dev_cloud.providers.github import (
+from dev_cloud.providers.github_queries import (
     GRAPHQL_NESTED_PAGE_SIZE,
     GRAPHQL_PAGE_SIZE,
 )

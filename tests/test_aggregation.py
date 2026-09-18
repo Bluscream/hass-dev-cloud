@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from dev_cloud import sensor
+from dev_cloud import aggregation
 from dev_cloud.models import DevCloudData, OrgData, ProfileData, RepoData
 
 
@@ -43,39 +43,39 @@ def _coordinator(*, include: bool) -> Any:
 
 
 def test_owned_orgs_always_count() -> None:
-    repos = sensor.counted_repos(_coordinator(include=False))
+    repos = aggregation.counted_repos(_coordinator(include=False))
     assert {r.full_name for r in repos} == {"Bluscream/own", "Mine/mods"}
 
 
 def test_non_owned_orgs_are_excluded_by_default() -> None:
     """Default off, or EpicGames' 50k stars would be reported as the user's."""
-    assert sum(r.stars for r in sensor.counted_repos(_coordinator(include=False))) == 691
+    assert sum(r.stars for r in aggregation.counted_repos(_coordinator(include=False))) == 691
 
 
 def test_unknown_ownership_is_treated_as_not_owned() -> None:
     """GitLab and Gitea expose no role, so the conservative reading applies."""
-    repos = sensor.counted_repos(_coordinator(include=False))
+    repos = aggregation.counted_repos(_coordinator(include=False))
     assert "Unknown/x" not in {r.full_name for r in repos}
 
 
 def test_enabling_the_option_includes_every_org() -> None:
-    repos = sensor.counted_repos(_coordinator(include=True))
+    repos = aggregation.counted_repos(_coordinator(include=True))
     assert len(repos) == 4
     assert sum(r.stars for r in repos) == 51690
 
 
 def test_releases_follow_the_same_rule_as_repos() -> None:
-    assert len(sensor.counted_releases(_coordinator(include=False))) == 2
-    assert len(sensor.counted_releases(_coordinator(include=True))) == 3
+    assert len(aggregation.counted_releases(_coordinator(include=False))) == 2
+    assert len(aggregation.counted_releases(_coordinator(include=True))) == 3
 
 
 def test_releases_of_uncounted_orgs_do_not_reach_the_download_total() -> None:
-    releases = sensor.counted_releases(_coordinator(include=False))
+    releases = aggregation.counted_releases(_coordinator(include=False))
     downloads = sum(a["downloads"] for r in releases for a in r["assets"])
     assert downloads == 150
 
 
 def test_assets_helper_tolerates_a_missing_or_malformed_key() -> None:
-    assert sensor._assets({}) == []
-    assert sensor._assets({"assets": None}) == []
-    assert sensor._assets({"assets": [{"downloads": 1}]}) == [{"downloads": 1}]
+    assert aggregation.assets({}) == []
+    assert aggregation.assets({"assets": None}) == []
+    assert aggregation.assets({"assets": [{"downloads": 1}]}) == [{"downloads": 1}]

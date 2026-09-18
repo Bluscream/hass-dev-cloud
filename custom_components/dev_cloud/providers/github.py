@@ -24,6 +24,8 @@ from .base import (
     async_collect_running_jobs,
     async_map_limited,
 )
+from .github_queries import SPONSORS_QUERY
+from .github_releases import async_fetch_all_releases, async_fetch_org_releases
 from .scheduling import PageWalker, ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,96 +33,6 @@ _LOGGER = logging.getLogger(__name__)
 GITHUB_PAGE_SIZE = 100
 # GitHub's search API refuses to page past 1000 results, whatever total_count says.
 GITHUB_SEARCH_RESULT_CAP = 1000
-# GraphQL connection page sizes. GitHub rejects a query whose *product* of `first` values
-# along any path exceeds 500,000 nodes, so the nested connections have to be smaller than the
-# outer one: 100 repos x 50 releases x 50 assets = 250,000. Anything past those nested page
-# sizes is picked up by the per-repository and per-release follow-up queries.
-GRAPHQL_PAGE_SIZE = 100
-GRAPHQL_NESTED_PAGE_SIZE = 50
-
-_RELEASE_FIELDS = """
-  id
-  name
-  tagName
-  publishedAt
-  url
-  releaseAssets(first: $nested) {
-    pageInfo { hasNextPage endCursor }
-    nodes { name downloadCount }
-  }
-"""
-
-_USER_RELEASES_QUERY = f"""
-query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
-  user(login: $login) {{
-    repositories(
-      first: $size,
-      after: $cursor,
-      ownerAffiliations: [OWNER],
-      orderBy: {{field: PUSHED_AT, direction: DESC}}
-    ) {{
-      pageInfo {{ hasNextPage endCursor }}
-      nodes {{
-        nameWithOwner
-        releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
-          pageInfo {{ hasNextPage endCursor }}
-          nodes {{ {_RELEASE_FIELDS} }}
-        }}
-      }}
-    }}
-  }}
-}}
-"""
-
-_REPO_RELEASES_QUERY = f"""
-query($owner: String!, $name: String!, $cursor: String, $size: Int!, $nested: Int!) {{
-  repository(owner: $owner, name: $name) {{
-    releases(first: $size, after: $cursor, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
-      pageInfo {{ hasNextPage endCursor }}
-      nodes {{ {_RELEASE_FIELDS} }}
-    }}
-  }}
-}}
-"""
-
-_ORG_RELEASES_QUERY = f"""
-query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
-  organization(login: $login) {{
-    repositories(first: $size, after: $cursor, orderBy: {{field: PUSHED_AT, direction: DESC}}) {{
-      pageInfo {{ hasNextPage endCursor }}
-      nodes {{
-        nameWithOwner
-        releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
-          pageInfo {{ hasNextPage endCursor }}
-          nodes {{ {_RELEASE_FIELDS} }}
-        }}
-      }}
-    }}
-  }}
-}}
-"""
-
-_SPONSORS_QUERY = """
-query($login: String!) {
-  user(login: $login) {
-    sponsorshipsAsMaintainer(activeOnly: true) { totalCount }
-    sponsorshipsAsSponsor(activeOnly: true) { totalCount }
-  }
-}
-"""
-
-_ASSETS_QUERY = """
-query($id: ID!, $cursor: String, $size: Int!) {
-  node(id: $id) {
-    ... on Release {
-      releaseAssets(first: $size, after: $cursor) {
-        pageInfo { hasNextPage endCursor }
-        nodes { name downloadCount }
-      }
-    }
-  }
-}
-"""
 
 
 class GitHubProvider(BaseDevCloudProvider):
@@ -278,142 +190,6 @@ class GitHubProvider(BaseDevCloudProvider):
         self._observe_rate_limit(resp)
         payload = resp.data or {}
         return payload.get("data") or payload or {}
-
-    async def _async_release_assets(
-        self, release_id: str, after: str | None
-    ) -> list[dict[str, Any]]:
-        """Page through a single release's assets beyond the first page."""
-        assets: list[dict[str, Any]] = []
-        cursor: str | None = after
-
-        for _ in range(MAX_PAGES):
-            data = await self._async_graphql(
-                _ASSETS_QUERY,
-                {"id": release_id, "cursor": cursor, "size": GRAPHQL_NESTED_PAGE_SIZE},
-            )
-            conn = ((data.get("node") or {}).get("releaseAssets")) or {}
-            assets.extend(conn.get("nodes") or [])
-            page = conn.get("pageInfo") or {}
-            if not page.get("hasNextPage"):
-                break
-            cursor = page.get("endCursor")
-
-        return assets
-
-    async def _async_repo_releases(
-        self, name_with_owner: str, after: str | None
-    ) -> list[dict[str, Any]]:
-        """Page through one repository's releases beyond the first page."""
-        owner, _, name = name_with_owner.partition("/")
-        releases: list[dict[str, Any]] = []
-        cursor: str | None = after
-
-        for _ in range(MAX_PAGES):
-            data = await self._async_graphql(
-                _REPO_RELEASES_QUERY,
-                {
-                    "owner": owner,
-                    "name": name,
-                    "cursor": cursor,
-                    "size": GRAPHQL_NESTED_PAGE_SIZE,
-                    "nested": GRAPHQL_NESTED_PAGE_SIZE,
-                },
-            )
-            conn = ((data.get("repository") or {}).get("releases")) or {}
-            releases.extend(conn.get("nodes") or [])
-            page = conn.get("pageInfo") or {}
-            if not page.get("hasNextPage"):
-                break
-            cursor = page.get("endCursor")
-
-        return releases
-
-    async def _async_build_release(
-        self, name_with_owner: str, release: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Flatten one GraphQL release node, completing its asset list if truncated."""
-        assets_conn = release.get("releaseAssets") or {}
-        assets = list(assets_conn.get("nodes") or [])
-        page = assets_conn.get("pageInfo") or {}
-        if page.get("hasNextPage") and release.get("id"):
-            assets.extend(await self._async_release_assets(release["id"], page.get("endCursor")))
-
-        return {
-            "repository": name_with_owner,
-            "name": release.get("name") or release.get("tagName"),
-            "tag": release.get("tagName"),
-            "published_at": release.get("publishedAt"),
-            "url": release.get("url"),
-            # Asset and download totals are derived from this list, never stored beside it.
-            "assets": [
-                {"name": a.get("name"), "downloads": a.get("downloadCount", 0)} for a in assets
-            ],
-        }
-
-    async def _async_fetch_all_releases(self) -> list[dict[str, Any]]:
-        """Every release of every repository owned by the account."""
-        return await self._async_releases_for(_USER_RELEASES_QUERY, self.account_name, "user")
-
-    async def _async_fetch_org_releases(self, orgs: list[OrgData]) -> list[dict[str, Any]]:
-        """Every release across the given organisations' repositories."""
-
-        async def _fetch(org: OrgData) -> list[dict[str, Any]]:
-            return await self._async_releases_for(_ORG_RELEASES_QUERY, org.name, "organization")
-
-        results = await async_map_limited(orgs, _fetch, RUNNING_JOBS_CONCURRENCY)
-
-        releases: list[dict[str, Any]] = []
-        for result in results:
-            if isinstance(result, BaseException):
-                _LOGGER.debug("Org release listing failed: %s", result)
-                continue
-            releases.extend(result)
-        return releases
-
-    async def _async_releases_for(
-        self, query: str, login: str, root_key: str
-    ) -> list[dict[str, Any]]:
-        """Every release of every repository under one user or organisation.
-
-        Three nested GraphQL connections are paginated: repositories, releases per
-        repository, and assets per release. Nothing is capped by item count, so
-        `len(releases)` and the per-release asset lists are authoritative.
-        """
-        releases: list[dict[str, Any]] = []
-        cursor: str | None = None
-
-        for _ in range(MAX_PAGES):
-            data = await self._async_graphql(
-                query,
-                {
-                    "login": login,
-                    "cursor": cursor,
-                    "size": GRAPHQL_PAGE_SIZE,
-                    "nested": GRAPHQL_NESTED_PAGE_SIZE,
-                },
-            )
-            repos_conn = ((data.get(root_key) or {}).get("repositories")) or {}
-
-            for repo in repos_conn.get("nodes") or []:
-                name_with_owner = repo.get("nameWithOwner")
-                rel_conn = repo.get("releases") or {}
-                nodes = list(rel_conn.get("nodes") or [])
-
-                rel_page = rel_conn.get("pageInfo") or {}
-                if rel_page.get("hasNextPage"):
-                    nodes.extend(
-                        await self._async_repo_releases(name_with_owner, rel_page.get("endCursor"))
-                    )
-
-                for node in nodes:
-                    releases.append(await self._async_build_release(name_with_owner, node))
-
-            repo_page = repos_conn.get("pageInfo") or {}
-            if not repo_page.get("hasNextPage"):
-                break
-            cursor = repo_page.get("endCursor")
-
-        return releases
 
     async def _async_fetch_running_jobs(
         self, repos: list[RepoData]
@@ -633,7 +409,7 @@ class GitHubProvider(BaseDevCloudProvider):
 
     async def _async_fetch_sponsors(self) -> tuple[int | None, int | None]:
         """Sponsor totals. The API exposes only counts here, so there is no list to derive."""
-        data = await self._async_graphql(_SPONSORS_QUERY, {"login": self.account_name})
+        data = await self._async_graphql(SPONSORS_QUERY, {"login": self.account_name})
         user = data.get("user") or {}
         if not user:
             return None, None
@@ -678,10 +454,10 @@ class GitHubProvider(BaseDevCloudProvider):
         )
         sponsors_count, sponsoring_count = sponsors
         releases: list[dict[str, Any]] = await self.async_resource(
-            "releases", self._async_fetch_all_releases, []
+            "releases", lambda: async_fetch_all_releases(self._async_graphql, self.account_name), []
         )
         org_releases: list[dict[str, Any]] = await self.async_resource(
-            "org_releases", lambda: self._async_fetch_org_releases(orgs), []
+            "org_releases", lambda: async_fetch_org_releases(self._async_graphql, orgs), []
         )
         releases = releases + org_releases
         jobs: tuple[int | None, list[dict[str, Any]]] = await self.async_resource(
