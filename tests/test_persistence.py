@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
@@ -37,7 +38,8 @@ def _snapshot() -> dict[str, Any]:
             )
         ],
     )
-    now = time.time()
+    # ISO, matching the snapshot's own fetched_at.
+    now = datetime.now(UTC).isoformat()
     data.resources = {
         "profile": {"fetched_at": now, "cost": 1},
         "repos": {"fetched_at": now, "cost": 6},
@@ -123,7 +125,7 @@ def test_persisted_state_round_trips_through_the_scheduler() -> None:
     second = ResourceScheduler(policies=dict(policies), has_token=True)
     second.restore(first.persisted_state())
 
-    assert second.diagnostics()["repos"]["cost"] == 6
+    assert second.persisted_state()["repos"]["cost"] == 6
     assert not second.should_fetch("repos")
 
 
@@ -136,3 +138,37 @@ async def test_restore_rebuilds_the_release_and_ref_detail(provider: Any) -> Non
     assert detail["releases"][0]["assets"][0]["downloads"] == 3
     assert detail["branches"][0]["name"] == "main"
     assert detail["tags"][0]["name"] == "v1"
+
+
+def test_the_schedule_records_when_each_resource_was_fetched_and_when_it_is_next_due() -> None:
+    """One block answers both questions per resource, in the same ISO format the snapshot
+    uses for its own fetched_at."""
+    sched = ResourceScheduler(
+        policies={
+            "notifications": ResourcePolicy(authenticated=300, anonymous=None, min_cache=0),
+            "releases": ResourcePolicy(authenticated=3600, anonymous=None, min_cache=1800),
+        },
+        has_token=True,
+    )
+    sched.record_fetch("notifications", cost=1)
+    sched.record_fetch("releases", cost=16)
+
+    state = sched.persisted_state()
+    assert set(state) == {"notifications", "releases"}
+
+    for key, expected_interval in (("notifications", 300), ("releases", 3600)):
+        entry = state[key]
+        datetime.fromisoformat(entry["fetched_at"])  # parses, so it is ISO
+        assert entry["interval"] == expected_interval
+        assert 0 < entry["next_due_in"] <= max(expected_interval, entry["min_cache"])
+
+    # Notifications are the fastest resource, so they come due first.
+    assert state["notifications"]["next_due_in"] < state["releases"]["next_due_in"]
+
+
+def test_a_resource_never_fetched_is_absent_from_the_schedule() -> None:
+    """Absent means "no basis for a delay", which is different from a delay of zero."""
+    sched = ResourceScheduler(
+        policies={"repos": ResourcePolicy(authenticated=900, anonymous=900)}, has_token=True
+    )
+    assert sched.persisted_state() == {}

@@ -155,11 +155,9 @@ class DevCloudData:
     totals: dict[str, int] = field(default_factory=dict)
     rate_limit_remaining: int | None = None
     rate_limit_reset: int | None = None
-    # Per-resource polling state (effective interval, measured request cost, age), so the
-    # adaptive scheduler's decisions are visible rather than opaque.
-    scheduling: dict[str, Any] = field(default_factory=dict)
-    # Per-resource fetch timestamps and costs, written into the snapshot so a reload can
-    # pick up where the previous process left off instead of refetching everything.
+    # Per-resource schedule: when each collection was last fetched, when it is next due,
+    # and what it cost. Written into the snapshot so a reload resumes the previous schedule
+    # instead of refetching everything, and so the pacing is inspectable rather than opaque.
     resources: dict[str, dict[str, Any]] = field(default_factory=dict)
     raw_status: str = "ok"
     error: str | None = None

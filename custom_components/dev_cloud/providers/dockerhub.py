@@ -165,7 +165,6 @@ class DockerHubProvider(BaseDevCloudProvider):
         return DevCloudData(
             profile=profile,
             packages=packages,
-            scheduling=self.scheduler.diagnostics(),
             resources=self.scheduler.persisted_state(),
             collected=self.collected_resources(),
         )

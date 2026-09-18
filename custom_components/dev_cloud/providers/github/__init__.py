@@ -566,7 +566,6 @@ class GitHubProvider(BaseDevCloudProvider):
                 profile=profile,
                 totals=dict(self._reported_totals),
                 rate_limit_remaining=self.scheduler.budget().remaining,
-                scheduling=self.scheduler.diagnostics(),
                 resources=self.scheduler.persisted_state(),
                 collected=self.collected_resources(),
             )
@@ -625,7 +624,6 @@ class GitHubProvider(BaseDevCloudProvider):
             running_jobs=running_jobs,
             rate_limit_remaining=rest_budget.remaining,
             rate_limit_reset=int(reset_epoch) if reset_epoch is not None else None,
-            scheduling=self.scheduler.diagnostics(),
             resources=self.scheduler.persisted_state(),
             collected=self.collected_resources(),
         )

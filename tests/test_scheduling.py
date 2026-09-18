@@ -77,7 +77,7 @@ def test_measured_cost_is_reported_in_diagnostics() -> None:
     sched = _scheduler()
     sched.record_fetch("repos", cost=7)
 
-    assert sched.diagnostics()["repos"]["cost"] == 7
+    assert sched.persisted_state()["repos"]["cost"] == 7
 
 
 def _page(start: int, size: int = 100) -> list[dict[str, int]]:
@@ -116,7 +116,7 @@ def test_measured_cost_tracks_the_latest_measurement() -> None:
     sched.record_fetch("repos", cost=200)
     sched.record_fetch("repos", cost=6)
 
-    assert sched.diagnostics()["repos"]["cost"] == 6
+    assert sched.persisted_state()["repos"]["cost"] == 6
 
 
 def test_budgets_are_tracked_per_quota() -> None:

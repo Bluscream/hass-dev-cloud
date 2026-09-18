@@ -226,7 +226,6 @@ class GiteaProvider(BaseDevCloudProvider):
             notifications=notifications,
             running_jobs_count=running_jobs_count,
             running_jobs=running_jobs,
-            scheduling=self.scheduler.diagnostics(),
             resources=self.scheduler.persisted_state(),
             collected=self.collected_resources(),
         )

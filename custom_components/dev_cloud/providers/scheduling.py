@@ -17,10 +17,12 @@ Two problems solved here, both consequences of the JSON dump needing *complete* 
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
@@ -210,6 +212,16 @@ class ResourceScheduler:
 
         return age >= self._failure_backoff(key, interval)
 
+    def next_due(self, key: str) -> float:
+        """Seconds until this resource may be refreshed again; 0 when it is due now."""
+        interval = self.effective_interval(key)
+        if interval is None:
+            return 0.0
+        policy = self.policies.get(key)
+        floor = max(interval, policy.min_cache if policy else 0.0)
+        waited = time.time() - self._state(key).last_fetched
+        return max(self._failure_backoff(key, floor) - waited, 0.0)
+
     def restore(self, states: Mapping[str, Mapping[str, Any]]) -> None:
         """Seed timestamps and costs from a previously persisted snapshot.
 
@@ -222,22 +234,12 @@ class ResourceScheduler:
                 continue
             state = self._state(key)
             fetched = saved.get("fetched_at")
-            if isinstance(fetched, int | float):
-                state.last_fetched = float(fetched)
+            if isinstance(fetched, str):
+                with contextlib.suppress(ValueError):
+                    state.last_fetched = datetime.fromisoformat(fetched).timestamp()
             cost = saved.get("cost")
             if isinstance(cost, int):
                 state.measured_cost = cost
-
-    def persisted_state(self) -> dict[str, dict[str, Any]]:
-        """Per-resource state for the snapshot, which `restore` reads back on reload."""
-        return {
-            key: {
-                "fetched_at": self._state(key).last_fetched,
-                "cost": self._state(key).measured_cost,
-            }
-            for key in self.policies
-            if self._state(key).last_fetched
-        }
 
     def record_fetch(self, key: str, cost: int) -> None:
         """Note that `key` was just refreshed, and what it actually cost in requests.
@@ -257,23 +259,29 @@ class ResourceScheduler:
         state.last_fetched = time.time()
         state.consecutive_failures += 1
 
-    def diagnostics(self) -> dict[str, Any]:
-        """Per-resource scheduling state, published in the JSON snapshot for debugging.
+    def persisted_state(self) -> dict[str, dict[str, Any]]:
+        """Per-resource schedule, written into the snapshot and read back by `restore`.
 
-        Deliberately not a sensor attribute: it is diagnostic detail that would sit in
-        the state machine and the recorder on every update.
+        One block rather than two: this previously sat beside a `scheduling` diagnostics map
+        that repeated `cost` and carried an `age` which was only ever now minus
+        `fetched_at`. Timestamps are ISO, matching the snapshot's own `fetched_at`, so the
+        file reads the same way throughout.
         """
-        return {
-            key: {
+        state: dict[str, dict[str, Any]] = {}
+        for key in self.policies:
+            last = self._state(key).last_fetched
+            if not last:
+                continue
+            state[key] = {
+                "fetched_at": datetime.fromtimestamp(last, tz=UTC).isoformat(),
+                "next_due_in": round(self.next_due(key), 1),
                 "interval": round(self.effective_interval(key) or 0, 1),
-                "cost": self._state(key).measured_cost,
-                "age": round(time.time() - self._state(key).last_fetched, 1),
                 "min_cache": self.policies[key].min_cache,
-                "failures": self._state(key).consecutive_failures,
+                "cost": self._state(key).measured_cost,
                 "quota": self.policies[key].quota,
+                "failures": self._state(key).consecutive_failures,
             }
-            for key in self.policies
-        }
+        return state
 
 
 class PageWalker:
