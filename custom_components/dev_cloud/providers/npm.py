@@ -71,7 +71,12 @@ class NPMProvider(BaseDevCloudProvider):
         orgs_url = f"{self.base_url}/-/org/{self.account_name}/user"
         try:
             org_json, _ = await self.async_get_json(orgs_url)
-        except Exception:
+        except Exception as err:
+            _LOGGER.debug(
+                "Authenticated npm org lookup failed for %s, retrying anonymously: %s",
+                self.account_name,
+                err,
+            )
             # Fall back to an anonymous query when the token lacks the org scope (403).
             anon_headers = {
                 "User-Agent": "HomeAssistant-DevCloud/1.0",

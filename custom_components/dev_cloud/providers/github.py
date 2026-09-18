@@ -192,14 +192,19 @@ class GitHubProvider(BaseDevCloudProvider):
         if headers is None:
             return
 
+        # getattr rather than attribute access: GraphQL and REST responses do not carry the
+        # same header model, and a missing attribute must not take the whole resource down.
+        raw_remaining = getattr(headers, "x_ratelimit_remaining", None)
+        raw_reset = getattr(headers, "x_ratelimit_reset", None)
+
         remaining: int | None = None
         reset: float | None = None
         with contextlib.suppress(TypeError, ValueError):
-            if headers.x_ratelimit_remaining is not None:
-                remaining = int(headers.x_ratelimit_remaining)
+            if raw_remaining is not None:
+                remaining = int(raw_remaining)
         with contextlib.suppress(TypeError, ValueError):
-            if headers.x_ratelimit_reset is not None:
-                reset = float(headers.x_ratelimit_reset)
+            if raw_reset is not None:
+                reset = float(raw_reset)
 
         self.scheduler.observe_rate_limit(remaining, reset)
 

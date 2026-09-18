@@ -80,3 +80,51 @@ def test_snapshot_carries_no_count_that_measures_a_list_it_contains() -> None:
     for key in payload:
         if key.endswith("_count"):
             assert key.removesuffix("_count") not in payload, f"{key} duplicates a list"
+
+
+def test_rate_limit_observation_survives_headers_without_the_attributes() -> None:
+    """A headers object lacking the attributes used to raise AttributeError, which was not
+    suppressed and silently disabled the resource through async_resource's catch-all."""
+    from dev_cloud.providers.github import GitHubProvider
+
+    provider = GitHubProvider.__new__(GitHubProvider)
+    observed: list[tuple[int | None, float | None]] = []
+
+    class _Scheduler:
+        def observe_rate_limit(self, remaining: int | None, reset: float | None) -> None:
+            observed.append((remaining, reset))
+
+    provider.scheduler = _Scheduler()  # type: ignore[assignment]
+
+    class _BareHeaders:
+        pass
+
+    class _Response:
+        headers = _BareHeaders()
+
+    provider._observe_rate_limit(_Response())
+    assert observed == [(None, None)]
+
+
+def test_rate_limit_observation_reads_present_headers() -> None:
+    """Guard the guard above: it must still parse real headers."""
+    from dev_cloud.providers.github import GitHubProvider
+
+    provider = GitHubProvider.__new__(GitHubProvider)
+    observed: list[tuple[int | None, float | None]] = []
+
+    class _Scheduler:
+        def observe_rate_limit(self, remaining: int | None, reset: float | None) -> None:
+            observed.append((remaining, reset))
+
+    provider.scheduler = _Scheduler()  # type: ignore[assignment]
+
+    class _Headers:
+        x_ratelimit_remaining = "4321"
+        x_ratelimit_reset = "1789750000"
+
+    class _Response:
+        headers = _Headers()
+
+    provider._observe_rate_limit(_Response())
+    assert observed == [(4321, 1789750000.0)]

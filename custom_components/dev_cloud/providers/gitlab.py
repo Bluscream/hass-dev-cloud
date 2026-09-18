@@ -200,7 +200,9 @@ class GitLabProvider(BaseDevCloudProvider):
             url = f"{self.base_url}/api/v4/groups/{org.org_id}/projects"
             return org.name, [self._to_repo(p) for p in await self.async_get_all_pages(url)]
 
-        results = await async_map_limited(orgs, _fetch, RUNNING_JOBS_CONCURRENCY)
+        # Group projects are addressed by numeric id; a group without one cannot be queried.
+        addressable = [org for org in orgs if org.org_id is not None]
+        results = await async_map_limited(addressable, _fetch, RUNNING_JOBS_CONCURRENCY)
 
         by_org: dict[str, list[RepoData]] = {}
         for result in results:
