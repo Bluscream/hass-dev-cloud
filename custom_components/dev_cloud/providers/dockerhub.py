@@ -166,4 +166,5 @@ class DockerHubProvider(BaseDevCloudProvider):
             profile=profile,
             packages=packages,
             scheduling=self.scheduler.diagnostics(),
+            resources=self.scheduler.persisted_state(),
         )

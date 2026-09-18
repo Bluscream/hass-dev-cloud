@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields, is_dataclass
+from typing import Any, cast
 
 
 @dataclass(slots=True)
@@ -147,5 +148,48 @@ class DevCloudData:
     # Per-resource polling state (effective interval, measured request cost, age), so the
     # adaptive scheduler's decisions are visible rather than opaque.
     scheduling: dict[str, Any] = field(default_factory=dict)
+    # Per-resource fetch timestamps and costs, written into the snapshot so a reload can
+    # pick up where the previous process left off instead of refetching everything.
+    resources: dict[str, dict[str, Any]] = field(default_factory=dict)
     raw_status: str = "ok"
     error: str | None = None
+
+
+#: Fields holding other models, so a restore rebuilds them rather than leaving raw dicts.
+#: Plain `list[dict]` fields (releases, issues, running jobs) are deliberately absent — they
+#: are already dictionaries by design.
+_NESTED_MODELS: dict[tuple[type, str], type] = {
+    (DevCloudData, "profile"): ProfileData,
+    (DevCloudData, "orgs"): OrgData,
+    (DevCloudData, "repos"): RepoData,
+    (DevCloudData, "pastes"): PasteData,
+    (DevCloudData, "packages"): PackageData,
+    (DevCloudData, "notifications"): NotificationData,
+    (OrgData, "repos"): RepoData,
+}
+
+
+def from_dict[T](cls: type[T], payload: Mapping[str, Any]) -> T:
+    """Rebuild a model from its serialised form.
+
+    The snapshot on disk is what the integration reloads its state from, so this is the
+    inverse of `dataclasses.asdict`. Unknown keys are ignored and missing ones fall back to
+    field defaults, because the writer prunes empty values and the schema moves between
+    versions — a restore must never fail on a field that has since been added or dropped.
+    """
+    if not is_dataclass(cls):
+        raise TypeError(f"{cls!r} is not a dataclass")
+
+    kwargs: dict[str, Any] = {}
+    for f in fields(cls):
+        if f.name not in payload:
+            continue
+        value = payload[f.name]
+        nested = _NESTED_MODELS.get((cls, f.name))
+        if nested is not None and isinstance(value, list):
+            value = [from_dict(nested, item) for item in value if isinstance(item, Mapping)]
+        elif nested is not None and isinstance(value, Mapping):
+            value = from_dict(nested, value)
+        kwargs[f.name] = value
+
+    return cast("T", cls(**kwargs))

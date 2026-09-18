@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -62,6 +63,14 @@ class ResourcePolicy:
     authenticated: float | None
     anonymous: float | None
     quota: str = QUOTA_REST
+    #: Resources this one is derived from. When a parent is refreshed the child's data was
+    #: built from inputs that have since moved, so it is due again as soon as its floor
+    #: allows — which is how the releases-of-repos-of-orgs chain reuses what is still valid
+    #: instead of rebuilding the whole thing.
+    depends_on: tuple[str, ...] = ()
+    #: Hard floor. Never refetch inside this window, whatever else changed. Without it a
+    #: parent refresh would cascade into its children on the very next poll.
+    min_cache: float = 300.0
 
     def base_interval(self, has_token: bool) -> float | None:
         return self.authenticated if has_token else self.anonymous
@@ -174,12 +183,61 @@ class ResourceScheduler:
         widened = interval * float(2 ** min(failures, MAX_BACKOFF_DOUBLINGS))
         return min(widened, float(MAX_INTERVAL_SECONDS))
 
+    def _parent_refreshed_since(self, key: str) -> bool:
+        """Whether anything this resource is derived from has moved under it."""
+        policy = self.policies.get(key)
+        if policy is None:
+            return False
+        own = self._state(key).last_fetched
+        return any(self._state(parent).last_fetched > own for parent in policy.depends_on)
+
     def should_fetch(self, key: str) -> bool:
         """Whether `key` is due for a refresh right now."""
         interval = self.effective_interval(key)
         if interval is None:
             return False
-        return (time.time() - self._state(key).last_fetched) >= self._failure_backoff(key, interval)
+
+        policy = self.policies.get(key)
+        age = time.time() - self._state(key).last_fetched
+
+        # The hard floor wins over everything, including a parent having changed.
+        if policy is not None and age < policy.min_cache:
+            return False
+
+        # Derived from inputs that have since been refreshed, so it is rebuilt from them.
+        if self._parent_refreshed_since(key):
+            return True
+
+        return age >= self._failure_backoff(key, interval)
+
+    def restore(self, states: Mapping[str, Mapping[str, Any]]) -> None:
+        """Seed timestamps and costs from a previously persisted snapshot.
+
+        Without this every reload starts at zero and refetches everything, which is how a
+        handful of redeploys in one afternoon exhausted an API budget. Only resources still
+        declared are restored, so one that has been removed does not linger.
+        """
+        for key, saved in states.items():
+            if key not in self.policies:
+                continue
+            state = self._state(key)
+            fetched = saved.get("fetched_at")
+            if isinstance(fetched, int | float):
+                state.last_fetched = float(fetched)
+            cost = saved.get("cost")
+            if isinstance(cost, int):
+                state.measured_cost = cost
+
+    def persisted_state(self) -> dict[str, dict[str, Any]]:
+        """Per-resource state for the snapshot, which `restore` reads back on reload."""
+        return {
+            key: {
+                "fetched_at": self._state(key).last_fetched,
+                "cost": self._state(key).measured_cost,
+            }
+            for key in self.policies
+            if self._state(key).last_fetched
+        }
 
     def record_fetch(self, key: str, cost: int) -> None:
         """Note that `key` was just refreshed, and what it actually cost in requests.
@@ -206,6 +264,7 @@ class ResourceScheduler:
                 "interval": round(self.effective_interval(key) or 0, 1),
                 "cost": self._state(key).measured_cost,
                 "age": round(time.time() - self._state(key).last_fetched, 1),
+                "min_cache": self.policies[key].min_cache,
                 "failures": self._state(key).consecutive_failures,
                 "quota": self.policies[key].quota,
             }

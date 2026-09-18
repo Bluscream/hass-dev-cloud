@@ -180,3 +180,28 @@ async def async_dump_dev_cloud_json(
         )
         return False
     return True
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    """Read a snapshot back. Runs in an executor — never call from the event loop."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+async def async_load_dev_cloud_json(
+    hass: HomeAssistant, platform: str, account: str
+) -> dict[str, Any] | None:
+    """Load the previous snapshot for an account, or None if there is not a usable one.
+
+    This is the integration's persistence: the file it publishes for consumers doubles as
+    the state it reloads from, so a restart does not begin by refetching the whole account.
+    """
+    path = _build_json_path(hass, platform, account)
+    try:
+        return await hass.async_add_executor_job(_read_json, path)
+    except Exception as err:
+        _LOGGER.debug("Could not read snapshot for %s:%s from %s: %s", platform, account, path, err)
+        return None

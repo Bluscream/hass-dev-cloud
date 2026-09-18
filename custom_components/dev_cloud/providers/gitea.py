@@ -28,9 +28,13 @@ class GiteaProvider(BaseDevCloudProvider):
         "repos": ResourcePolicy(authenticated=900, anonymous=3600),
         "orgs": ResourcePolicy(authenticated=3600, anonymous=7200),
         # Fans out over every organisation, so it shares the slow org cadence.
-        "org_repos": ResourcePolicy(authenticated=3600, anonymous=7200),
+        "org_repos": ResourcePolicy(
+            authenticated=3600, anonymous=7200, depends_on=("orgs",), min_cache=1800
+        ),
         "notifications": ResourcePolicy(authenticated=300, anonymous=None),
-        "running_jobs": ResourcePolicy(authenticated=300, anonymous=None),
+        "running_jobs": ResourcePolicy(
+            authenticated=300, anonymous=None, depends_on=("repos",), min_cache=120
+        ),
     }
 
     def get_headers(self) -> dict[str, str]:
@@ -223,4 +227,5 @@ class GiteaProvider(BaseDevCloudProvider):
             running_jobs_count=running_jobs_count,
             running_jobs=running_jobs,
             scheduling=self.scheduler.diagnostics(),
+            resources=self.scheduler.persisted_state(),
         )

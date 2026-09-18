@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, ClassVar, cast
 
 from aiohttp import ClientSession
 from yarl import URL
 
-from ..models import DevCloudData
+from ..models import DevCloudData, from_dict
 from .scheduling import PageWalker, ResourcePolicy, ResourceScheduler
 
 _LOGGER = logging.getLogger(__name__)
@@ -123,6 +123,35 @@ class BaseDevCloudProvider(ABC):
         # than guessed.
         self.request_count = 0
         self._resource_values: dict[str, Any] = {}
+
+    def restore(self, snapshot: Mapping[str, Any]) -> None:
+        """Re-seed cached values and schedule timestamps from a persisted snapshot.
+
+        A reload otherwise begins with every resource due and every cache empty, so the
+        integration refetches the entire account each time it is redeployed.
+        """
+        self.scheduler.restore(snapshot.get("resources") or {})
+
+        data = from_dict(DevCloudData, snapshot)
+        for key, value in (
+            ("profile", data.profile),
+            ("repos", data.repos),
+            ("orgs", data.orgs),
+            ("pastes", data.pastes),
+            ("packages", data.packages),
+            ("notifications", data.notifications),
+            ("issues", data.open_issues),
+            ("prs", data.open_prs),
+            ("releases", data.releases),
+        ):
+            if value:
+                self._resource_values[key] = value
+
+        # Organisation repositories live inside their organisation, so the derived resource
+        # is reconstructed from them rather than stored twice.
+        org_repos = {org.name: org.repos for org in data.orgs if org.repos}
+        if org_repos:
+            self._resource_values["org_repos"] = org_repos
 
     async def async_resource[T](
         self,

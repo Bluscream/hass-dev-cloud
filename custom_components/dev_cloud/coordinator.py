@@ -31,7 +31,7 @@ from .const import (
 )
 from .models import DevCloudData
 from .providers import DevCloudProviderError, get_provider
-from .storage import async_dump_dev_cloud_json, build_json_url
+from .storage import async_dump_dev_cloud_json, async_load_dev_cloud_json, build_json_url
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,6 +79,10 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         # bulky lists stripped from state attributes stay reachable.
         self.json_url: URL = build_json_url(self.platform_id, self.account_name)
 
+        # Restored from the published snapshot on the first poll, so a reload resumes the
+        # previous schedule rather than treating every resource as due.
+        self._restored = False
+
         self._previous_repos: set[str] = set()
         self._previous_packages: set[str] = set()
 
@@ -108,8 +112,29 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
                 {"platform": self.platform_id, "account": self.account_name, field: name},
             )
 
+    async def _async_restore(self) -> None:
+        """Seed the provider from the last published snapshot, once per process."""
+        self._restored = True
+        snapshot = await async_load_dev_cloud_json(self.hass, self.platform_id, self.account_name)
+        if not snapshot:
+            return
+
+        try:
+            self.provider.restore(snapshot)
+        except Exception as err:
+            # A snapshot from an older schema must never stop the integration loading.
+            _LOGGER.debug("Ignoring unusable snapshot for %s: %s", self.account_name, err)
+            return
+
+        _LOGGER.debug(
+            "Restored %s:%s from its published snapshot", self.platform_id, self.account_name
+        )
+
     async def _async_update_data(self) -> DevCloudData:
         """Fetch updated data from the provider."""
+        if not self._restored:
+            await self._async_restore()
+
         try:
             data = await self.provider.async_fetch()
         except DevCloudProviderError as err:

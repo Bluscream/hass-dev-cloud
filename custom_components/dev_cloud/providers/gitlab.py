@@ -30,9 +30,13 @@ class GitLabProvider(BaseDevCloudProvider):
         "pastes": ResourcePolicy(authenticated=1800, anonymous=3600),
         "orgs": ResourcePolicy(authenticated=3600, anonymous=None),
         # Fans out over every group, so it shares the slow org cadence.
-        "org_repos": ResourcePolicy(authenticated=3600, anonymous=None),
+        "org_repos": ResourcePolicy(
+            authenticated=3600, anonymous=None, depends_on=("orgs",), min_cache=1800
+        ),
         "notifications": ResourcePolicy(authenticated=300, anonymous=None),
-        "running_jobs": ResourcePolicy(authenticated=300, anonymous=900),
+        "running_jobs": ResourcePolicy(
+            authenticated=300, anonymous=900, depends_on=("repos",), min_cache=120
+        ),
     }
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -275,4 +279,5 @@ class GitLabProvider(BaseDevCloudProvider):
             running_jobs=running_jobs,
             rate_limit_remaining=self.scheduler.budget().remaining,
             scheduling=self.scheduler.diagnostics(),
+            resources=self.scheduler.persisted_state(),
         )

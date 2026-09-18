@@ -62,12 +62,28 @@ class GitHubProvider(BaseDevCloudProvider):
         "prs": ResourcePolicy(authenticated=900, anonymous=3600),
         "sponsors": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
         # By far the most expensive: three nested paginated GraphQL connections.
-        "releases": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
+        "releases": ResourcePolicy(
+            authenticated=3600,
+            anonymous=None,
+            quota=QUOTA_GRAPHQL,
+            depends_on=("repos",),
+            min_cache=1800,
+        ),
         # Fan out over every organisation, so they keep the same slow cadence as releases.
-        "org_repos": ResourcePolicy(authenticated=3600, anonymous=7200),
-        "org_releases": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
+        "org_repos": ResourcePolicy(
+            authenticated=3600, anonymous=7200, depends_on=("orgs",), min_cache=1800
+        ),
+        "org_releases": ResourcePolicy(
+            authenticated=3600,
+            anonymous=None,
+            quota=QUOTA_GRAPHQL,
+            depends_on=("orgs", "org_repos"),
+            min_cache=1800,
+        ),
         # Must stay fresh to mean anything, but is capped to a handful of repos.
-        "running_jobs": ResourcePolicy(authenticated=300, anonymous=600),
+        "running_jobs": ResourcePolicy(
+            authenticated=300, anonymous=600, depends_on=("repos",), min_cache=120
+        ),
     }
 
     def __init__(
@@ -504,6 +520,7 @@ class GitHubProvider(BaseDevCloudProvider):
                 totals=dict(self._reported_totals),
                 rate_limit_remaining=self.scheduler.budget().remaining,
                 scheduling=self.scheduler.diagnostics(),
+                resources=self.scheduler.persisted_state(),
             )
 
         repos: list[RepoData] = await self.async_resource("repos", self._async_fetch_repos, [])
@@ -563,4 +580,5 @@ class GitHubProvider(BaseDevCloudProvider):
             rate_limit_remaining=rest_budget.remaining,
             rate_limit_reset=int(reset_epoch) if reset_epoch is not None else None,
             scheduling=self.scheduler.diagnostics(),
+            resources=self.scheduler.persisted_state(),
         )
