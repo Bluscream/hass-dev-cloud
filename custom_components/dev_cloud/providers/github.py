@@ -283,6 +283,35 @@ class GitHubProvider(BaseDevCloudProvider):
         except Exception as err:
             _LOGGER.warning("Error fetching GitHub open PRs for %s: %s", self.account_name, err)
 
+        # 7. Fetch Sponsors data via GraphQL
+        sponsors_count: int | None = None
+        sponsoring_count: int | None = None
+        if self.api_token:
+            try:
+                query = f"""
+                query {{
+                  user(login: "{self.account_name}") {{
+                    sponsorshipsAsMaintainer(activeOnly: true) {{
+                      totalCount
+                    }}
+                    sponsorshipsAsSponsor(activeOnly: true) {{
+                      totalCount
+                    }}
+                  }}
+                }}
+                """
+                gql_resp = await self._api.graphql(query=query)
+                user_gql = (gql_resp.data or {}).get("data", {}).get("user", {})
+                if user_gql:
+                    sponsors_data = user_gql.get("sponsorshipsAsMaintainer", {})
+                    sponsoring_data = user_gql.get("sponsorshipsAsSponsor", {})
+                    sponsors_count = sponsors_data.get("totalCount")
+                    sponsoring_count = sponsoring_data.get("totalCount")
+            except Exception as err:
+                _LOGGER.debug(
+                    "Could not fetch GitHub sponsorships for %s: %s", self.account_name, err
+                )
+
         return DevCloudData(
             profile=profile,
             orgs=orgs,
@@ -293,6 +322,8 @@ class GitHubProvider(BaseDevCloudProvider):
             open_prs_count=open_prs_count,
             open_issues=open_issues,
             open_prs=open_prs,
+            sponsors_count=sponsors_count,
+            sponsoring_count=sponsoring_count,
             rate_limit_remaining=rate_limit_remaining,
             rate_limit_reset=rate_limit_reset,
         )

@@ -45,13 +45,14 @@ async def async_setup_entry(
     if coordinator.platform_id in FORGE_PLATFORMS:
         entities.append(DevCloudNotificationsSensor(coordinator))
 
-    # Add Open Issues & Open Pull Requests sensors for forge platforms
+    # Add Open Issues, PRs, Stars, Watchers, Forks, and Sponsors sensors for forge platforms
     if coordinator.platform_id in FORGE_PLATFORMS:
         entities.append(DevCloudOpenIssuesSensor(coordinator))
         entities.append(DevCloudOpenPullRequestsSensor(coordinator))
         entities.append(DevCloudStarsSensor(coordinator))
         entities.append(DevCloudWatchersSensor(coordinator))
         entities.append(DevCloudForksSensor(coordinator))
+        entities.append(DevCloudSponsorsSensor(coordinator))
 
     # Add Packages sensor if platform has packages
     if coordinator.data and coordinator.data.packages:
@@ -102,10 +103,6 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             "created_at": prof.created_at,
             "followers": prof.followers,
             "following": prof.following,
-            "public_repositories": prof.public_repos,
-            "private_repositories": prof.private_repos,
-            "public_pastes": prof.public_gists,
-            "private_pastes": prof.private_gists,
             "rate_limit_remaining": data.rate_limit_remaining,
             "rate_limit_reset": data.rate_limit_reset,
         }
@@ -466,3 +463,33 @@ class DevCloudForksSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return None
         return sum(r.forks for r in self.coordinator.data.repos)
+
+
+class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for active sponsors count."""
+
+    _attr_icon = "mdi:heart"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "sponsors"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "sponsors")
+        self._attr_name = "Sponsors"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.sponsors_count or 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self.coordinator.data:
+            return {}
+        data = self.coordinator.data
+        attrs: dict[str, Any] = {
+            "sponsors": data.sponsors_count,
+            "sponsoring": data.sponsoring_count,
+        }
+        return {k: v for k, v in attrs.items() if v is not None}

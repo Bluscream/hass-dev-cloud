@@ -128,6 +128,8 @@ class DevCloudData:
     open_prs_count: int | None = None
     open_issues: list[dict[str, Any]] = field(default_factory=list)
     open_prs: list[dict[str, Any]] = field(default_factory=list)
+    sponsors_count: int | None = None
+    sponsoring_count: int | None = None
     rate_limit_remaining: int | None = None
     rate_limit_reset: int | None = None
     raw_status: str = "ok"
