@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from dev_cloud.providers.scheduling import (
     MAX_INTERVAL_SECONDS,
     PageWalker,
@@ -115,3 +117,82 @@ def test_measured_cost_tracks_the_latest_measurement() -> None:
     sched.record_fetch("repos", cost=6)
 
     assert sched.diagnostics()["repos"]["cost"] == 6
+
+
+def test_budgets_are_tracked_per_quota() -> None:
+    """Regression: REST and GraphQL shared one field, so a healthy REST reading overwrote an
+    exhausted GraphQL one — masking the resource that most needed to back off."""
+    from dev_cloud.providers.scheduling import QUOTA_GRAPHQL, QUOTA_REST
+
+    sched = ResourceScheduler(
+        policies={
+            "repos": ResourcePolicy(authenticated=900, anonymous=3600),
+            # Deliberately a short floor, so an exhausted quota visibly stretches it.
+            "releases": ResourcePolicy(authenticated=300, anonymous=None, quota=QUOTA_GRAPHQL),
+        },
+        has_token=True,
+    )
+    sched.observe_rate_limit(0, time.time() + 3600, QUOTA_GRAPHQL)
+    sched.observe_rate_limit(4900, time.time() + 3600, QUOTA_REST)
+
+    assert sched.budget(QUOTA_REST).remaining == 4900
+    assert sched.budget(QUOTA_GRAPHQL).remaining == 0
+
+    sched.record_fetch("releases", cost=20)
+    sched.record_fetch("repos", cost=6)
+
+    # REST is healthy, so its resource keeps its floor.
+    assert sched.effective_interval("repos") == 900
+    # GraphQL is spent, so its resource waits for the reset rather than retrying into it.
+    releases_interval = sched.effective_interval("releases")
+    assert releases_interval is not None
+    assert releases_interval > 300
+    assert releases_interval == pytest.approx(3600, abs=5)
+
+
+def test_an_exhausted_quota_is_not_mistaken_for_an_unknown_one() -> None:
+    """`if not rate` treated 0 remaining as "no information" and carried on at the base
+    interval — retrying straight into a wall."""
+    from dev_cloud.providers.scheduling import QUOTA_REST, RateLimitBudget
+
+    spent = RateLimitBudget(remaining=0, reset_epoch=time.time() + 1800)
+    unknown = RateLimitBudget()
+
+    assert spent.requests_per_second() == 0.0
+    assert unknown.requests_per_second() is None
+
+    sched = ResourceScheduler(
+        policies={"repos": ResourcePolicy(authenticated=60, anonymous=60)}, has_token=True
+    )
+    sched.observe_rate_limit(0, time.time() + 1800, QUOTA_REST)
+    interval = sched.effective_interval("repos")
+    assert interval is not None and interval == pytest.approx(1800, abs=5)
+
+
+def test_a_failing_resource_backs_off_instead_of_retrying_every_poll() -> None:
+    """Regression: only a successful fetch updated the timestamp, so a rate-limited
+    resource was retried on every single poll — the retries prolong the block."""
+    sched = _scheduler()
+    assert sched.should_fetch("notifications")
+
+    sched.record_failure("notifications")
+    assert not sched.should_fetch("notifications")
+
+    base = sched.effective_interval("notifications")
+    assert base is not None
+    assert sched._failure_backoff("notifications", base) > base
+
+    # Repeated failures widen it further, then hold at the ceiling.
+    for _ in range(10):
+        sched.record_failure("notifications")
+    assert sched._failure_backoff("notifications", base) <= MAX_INTERVAL_SECONDS
+
+
+def test_a_success_clears_the_failure_backoff() -> None:
+    sched = _scheduler()
+    sched.record_failure("repos")
+    sched.record_fetch("repos", cost=6)
+
+    base = sched.effective_interval("repos")
+    assert base is not None
+    assert sched._failure_backoff("repos", base) == base

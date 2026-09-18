@@ -148,11 +148,13 @@ class BaseDevCloudProvider(ABC):
                 self.account_name,
                 err,
             )
+            self.scheduler.record_failure(key)
             return cast("T", self._resource_values.get(key, default))
         except Exception as err:
             _LOGGER.warning(
                 "Error fetching %s for %s:%s: %s", key, self.platform_id, self.account_name, err
             )
+            self.scheduler.record_failure(key)
             return cast("T", self._resource_values.get(key, default))
 
         self.scheduler.record_fetch(key, self.request_count - before)

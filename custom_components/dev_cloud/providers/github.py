@@ -27,7 +27,7 @@ from .base import (
 )
 from .github_queries import SPONSORS_QUERY
 from .github_releases import async_fetch_all_releases, async_fetch_org_releases
-from .scheduling import PageWalker, ResourcePolicy
+from .scheduling import QUOTA_GRAPHQL, PageWalker, ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,12 +56,12 @@ class GitHubProvider(BaseDevCloudProvider):
         # Search has its own much tighter quota (30/min authenticated, 10/min anonymous).
         "issues": ResourcePolicy(authenticated=900, anonymous=3600),
         "prs": ResourcePolicy(authenticated=900, anonymous=3600),
-        "sponsors": ResourcePolicy(authenticated=3600, anonymous=None),
+        "sponsors": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
         # By far the most expensive: three nested paginated GraphQL connections.
-        "releases": ResourcePolicy(authenticated=3600, anonymous=None),
+        "releases": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
         # Fan out over every organisation, so they keep the same slow cadence as releases.
         "org_repos": ResourcePolicy(authenticated=3600, anonymous=7200),
-        "org_releases": ResourcePolicy(authenticated=3600, anonymous=None),
+        "org_releases": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
         # Must stay fresh to mean anything, but is capped to a handful of repos.
         "running_jobs": ResourcePolicy(authenticated=300, anonymous=600),
     }
@@ -119,7 +119,7 @@ class GitHubProvider(BaseDevCloudProvider):
             if raw_reset is not None:
                 reset = float(raw_reset)
 
-        self.scheduler.observe_rate_limit(remaining, reset)
+        self.scheduler.observe_rate_limit(remaining, reset)  # REST headers
 
     async def _async_all_pages(
         self, endpoint: str, params: dict[str, Any] | None = None
@@ -214,7 +214,7 @@ class GitHubProvider(BaseDevCloudProvider):
                 reset_epoch = datetime.fromisoformat(reset_at).timestamp()
 
         if isinstance(remaining, int):
-            self.scheduler.observe_rate_limit(remaining, reset_epoch)
+            self.scheduler.observe_rate_limit(remaining, reset_epoch, QUOTA_GRAPHQL)
 
     async def _async_fetch_running_jobs(
         self, repos: list[RepoData]
@@ -490,6 +490,10 @@ class GitHubProvider(BaseDevCloudProvider):
         )
         running_jobs_count, running_jobs = jobs
 
+        # Bound once: the REST allowance is what these two fields have always reported.
+        rest_budget = self.scheduler.budget()
+        reset_epoch = rest_budget.reset_epoch
+
         return DevCloudData(
             profile=profile,
             orgs=orgs,
@@ -503,11 +507,7 @@ class GitHubProvider(BaseDevCloudProvider):
             running_jobs_count=running_jobs_count,
             running_jobs=running_jobs,
             releases=releases,
-            rate_limit_remaining=self.scheduler.budget.remaining,
-            rate_limit_reset=(
-                int(self.scheduler.budget.reset_epoch)
-                if self.scheduler.budget.reset_epoch
-                else None
-            ),
+            rate_limit_remaining=rest_budget.remaining,
+            rate_limit_reset=int(reset_epoch) if reset_epoch is not None else None,
             scheduling=self.scheduler.diagnostics(),
         )

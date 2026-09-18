@@ -36,6 +36,16 @@ BUDGET_SAFETY_FACTOR = 0.25
 # first few polls back off rather than stampede.
 DEFAULT_ASSUMED_COST = 5
 
+# Consecutive failures double the interval up to this many times, then hold.
+MAX_BACKOFF_DOUBLINGS = 4
+
+
+#: Quota a resource draws on. A platform can meter several independently — GitHub bills
+#: REST per request and GraphQL in points, against separate allowances that drain and reset
+#: on their own schedules.
+QUOTA_REST = "rest"
+QUOTA_GRAPHQL = "graphql"
+
 
 @dataclass(frozen=True)
 class ResourcePolicy:
@@ -44,10 +54,14 @@ class ResourcePolicy:
     `authenticated` and `anonymous` are minimum seconds between refreshes. `None` means the
     resource is unavailable in that mode and is never fetched (e.g. notifications without a
     token). The scheduler only ever makes these intervals *longer*, never shorter.
+
+    `quota` names which allowance the resource spends, so a healthy REST budget cannot mask
+    an exhausted GraphQL one.
     """
 
     authenticated: float | None
     anonymous: float | None
+    quota: str = QUOTA_REST
 
     def base_interval(self, has_token: bool) -> float | None:
         return self.authenticated if has_token else self.anonymous
@@ -57,6 +71,7 @@ class ResourcePolicy:
 class _ResourceState:
     last_fetched: float = 0.0
     measured_cost: int | None = None
+    consecutive_failures: int = 0
 
 
 @dataclass
@@ -66,8 +81,18 @@ class RateLimitBudget:
     remaining: int | None = None
     reset_epoch: float | None = None
 
+    def seconds_until_reset(self) -> float:
+        """Time left in the current window, never negative."""
+        if self.reset_epoch is None:
+            return 0.0
+        return max(self.reset_epoch - time.time(), 0.0)
+
     def requests_per_second(self) -> float | None:
-        """Safe sustained request rate until the quota resets, or None if unknown."""
+        """Safe sustained request rate until the quota resets, or None if unknown.
+
+        Returns 0.0 — not None — when the allowance is spent. The two are different states
+        and callers must not conflate them: unknown means "carry on", spent means "stop".
+        """
         if self.remaining is None or self.reset_epoch is None:
             return None
         window = max(self.reset_epoch - time.time(), 1.0)
@@ -80,18 +105,33 @@ class ResourceScheduler:
 
     policies: dict[str, ResourcePolicy]
     has_token: bool
-    budget: RateLimitBudget = field(default_factory=RateLimitBudget)
+    budgets: dict[str, RateLimitBudget] = field(default_factory=dict)
     _states: dict[str, _ResourceState] = field(default_factory=dict)
 
     def _state(self, key: str) -> _ResourceState:
         return self._states.setdefault(key, _ResourceState())
 
-    def observe_rate_limit(self, remaining: int | None, reset_epoch: float | None) -> None:
-        """Record rate-limit headers so intervals can adapt to the real budget."""
+    def budget(self, quota: str = QUOTA_REST) -> RateLimitBudget:
+        """The tracked allowance for one quota."""
+        return self.budgets.setdefault(quota, RateLimitBudget())
+
+    def observe_rate_limit(
+        self,
+        remaining: int | None,
+        reset_epoch: float | None,
+        quota: str = QUOTA_REST,
+    ) -> None:
+        """Record rate-limit headers for one quota.
+
+        Keyed by quota because a platform meters several independently: writing a healthy
+        REST figure over an exhausted GraphQL one hid the very resource that needed to back
+        off the hardest.
+        """
+        budget = self.budget(quota)
         if remaining is not None:
-            self.budget.remaining = remaining
+            budget.remaining = remaining
         if reset_epoch is not None:
-            self.budget.reset_epoch = reset_epoch
+            budget.reset_epoch = reset_epoch
 
     def effective_interval(self, key: str) -> float | None:
         """Refresh floor for `key`, stretched to fit the remaining quota.
@@ -105,9 +145,15 @@ class ResourceScheduler:
         if base is None:
             return None
 
-        rate = self.budget.requests_per_second()
-        if not rate:
+        budget = self.budget(policy.quota)
+        rate = budget.requests_per_second()
+        if rate is None:
             return base
+        if rate <= 0:
+            # The allowance is spent: nothing will succeed before it resets, so wait for
+            # the reset rather than retrying into a wall. `not rate` here would have
+            # treated exhaustion as "no information" and carried on at the base interval.
+            return min(max(base, budget.seconds_until_reset()), MAX_INTERVAL_SECONDS)
 
         cost = self._state(key).measured_cost or DEFAULT_ASSUMED_COST
         # Seconds this resource must wait so that repeating it at that cadence consumes no
@@ -115,12 +161,25 @@ class ResourceScheduler:
         required = cost / rate
         return min(max(base, required), MAX_INTERVAL_SECONDS)
 
+    def _failure_backoff(self, key: str, interval: float) -> float:
+        """Widen the interval while a resource keeps failing.
+
+        Without this a resource that errors is retried on every poll, because only a
+        successful fetch updates its timestamp. Against a rate-limited endpoint that is the
+        worst possible behaviour: the retries are what prolong the block.
+        """
+        failures = self._state(key).consecutive_failures
+        if not failures:
+            return interval
+        widened = interval * float(2 ** min(failures, MAX_BACKOFF_DOUBLINGS))
+        return min(widened, float(MAX_INTERVAL_SECONDS))
+
     def should_fetch(self, key: str) -> bool:
         """Whether `key` is due for a refresh right now."""
         interval = self.effective_interval(key)
         if interval is None:
             return False
-        return (time.time() - self._state(key).last_fetched) >= interval
+        return (time.time() - self._state(key).last_fetched) >= self._failure_backoff(key, interval)
 
     def record_fetch(self, key: str, cost: int) -> None:
         """Note that `key` was just refreshed, and what it actually cost in requests.
@@ -132,6 +191,13 @@ class ResourceScheduler:
         state = self._state(key)
         state.last_fetched = time.time()
         state.measured_cost = cost
+        state.consecutive_failures = 0
+
+    def record_failure(self, key: str) -> None:
+        """Note a failed attempt, so the retry is paced instead of immediate."""
+        state = self._state(key)
+        state.last_fetched = time.time()
+        state.consecutive_failures += 1
 
     def diagnostics(self) -> dict[str, Any]:
         """Per-resource scheduling state, surfaced on the profile sensor for debugging."""
@@ -140,6 +206,8 @@ class ResourceScheduler:
                 "interval": round(self.effective_interval(key) or 0, 1),
                 "cost": self._state(key).measured_cost,
                 "age": round(time.time() - self._state(key).last_fetched, 1),
+                "failures": self._state(key).consecutive_failures,
+                "quota": self.policies[key].quota,
             }
             for key in self.policies
         }
