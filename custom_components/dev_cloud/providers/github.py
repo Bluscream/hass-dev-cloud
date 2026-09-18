@@ -78,6 +78,21 @@ class GitHubProvider(BaseDevCloudProvider):
             with contextlib_suppress():
                 rate_limit_reset = int(user_resp.headers.x_ratelimit_reset)
 
+        private_gists: int | None = None
+        private_repos: int | None = None
+        if self.api_token:
+            try:
+                auth_user_resp = await self._api.generic("/user")
+                if isinstance(auth_user_resp.data, dict):
+                    private_gists = auth_user_resp.data.get("private_gists")
+                    private_repos = auth_user_resp.data.get("total_private_repos")
+            except Exception as err:
+                _LOGGER.debug("Could not fetch authenticated user details: %s", err)
+
+        total_gists: int | None = None
+        if user.public_gists is not None:
+            total_gists = user.public_gists + (private_gists or 0)
+
         profile = ProfileData(
             username=user.login or self.account_name,
             display_name=user.name,
@@ -94,6 +109,9 @@ class GitHubProvider(BaseDevCloudProvider):
             following=user.following,
             public_repos=user.public_repos,
             public_gists=user.public_gists,
+            private_repos=private_repos,
+            private_gists=private_gists,
+            total_gists=total_gists,
         )
 
         # 2. Fetch repos
@@ -152,12 +170,11 @@ class GitHubProvider(BaseDevCloudProvider):
         except Exception as err:
             _LOGGER.warning("Error fetching GitHub orgs for %s: %s", self.account_name, err)
 
-        # 4. Fetch gists
+        # 4. Fetch gists (query /gists when authenticated to include private/secret gists)
         pastes: list[PasteData] = []
         try:
-            gists_resp = await self._api.generic(
-                f"/users/{self.account_name}/gists", params={"per_page": 100}
-            )
+            gists_endpoint = "/gists" if self.api_token else f"/users/{self.account_name}/gists"
+            gists_resp = await self._api.generic(gists_endpoint, params={"per_page": 100})
             if isinstance(gists_resp.data, list):
                 for g in gists_resp.data:
                     files = g.get("files", {})

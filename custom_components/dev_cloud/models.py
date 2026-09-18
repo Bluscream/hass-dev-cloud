@@ -25,6 +25,9 @@ class ProfileData:
     following: int | None = None
     public_repos: int | None = None
     public_gists: int | None = None
+    private_repos: int | None = None
+    private_gists: int | None = None
+    total_gists: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 

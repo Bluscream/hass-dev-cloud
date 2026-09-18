@@ -111,9 +111,9 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             "total_forks": total_forks,
             "total_watchers": total_watchers,
             "total_organizations": len(data.orgs),
-            "total_pastes": prof.public_gists
-            if prof.public_gists is not None
-            else len(data.pastes),
+            "total_pastes": prof.total_gists
+            if prof.total_gists is not None
+            else (prof.public_gists if prof.public_gists is not None else len(data.pastes)),
             "total_packages": len(data.packages) if data.packages else None,
             "open_issues": data.open_issues_count
             if data.open_issues_count is not None
@@ -141,8 +141,9 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        if self.coordinator.data.profile.public_repos is not None:
-            return self.coordinator.data.profile.public_repos
+        prof = self.coordinator.data.profile
+        if prof.public_repos is not None:
+            return prof.public_repos + (prof.private_repos or 0)
         return len(self.coordinator.data.repos)
 
     @property
@@ -172,13 +173,17 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
             for r in repos[:25]
         ]
 
-        return {
-            "total_repositories": len(repos),
+        prof = self.coordinator.data.profile
+        attrs = {
+            "total_repositories": self.native_value,
+            "public_repositories": prof.public_repos,
+            "private_repositories": prof.private_repos,
             "total_stars": total_stars,
             "total_forks": total_forks,
             "total_watchers": total_watchers,
             "repositories": repo_list,
         }
+        return {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudOrganizationsSensor(DevCloudBaseEntity, SensorEntity):
@@ -231,8 +236,11 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        if self.coordinator.data.profile.public_gists is not None:
-            return self.coordinator.data.profile.public_gists
+        prof = self.coordinator.data.profile
+        if prof.total_gists is not None:
+            return prof.total_gists
+        if prof.public_gists is not None:
+            return prof.public_gists
         return len(self.coordinator.data.pastes)
 
     @property
@@ -240,8 +248,11 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
         pastes = self.coordinator.data.pastes
-        return {
-            "total_pastes": len(pastes),
+        prof = self.coordinator.data.profile
+        attrs = {
+            "total_pastes": self.native_value,
+            "public_pastes": prof.public_gists,
+            "private_pastes": prof.private_gists,
             "pastes": [
                 {
                     "id": p.paste_id,
@@ -254,6 +265,7 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
                 for p in pastes[:25]
             ],
         }
+        return {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
