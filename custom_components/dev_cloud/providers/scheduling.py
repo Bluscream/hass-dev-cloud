@@ -258,7 +258,11 @@ class ResourceScheduler:
         state.consecutive_failures += 1
 
     def diagnostics(self) -> dict[str, Any]:
-        """Per-resource scheduling state, surfaced on the profile sensor for debugging."""
+        """Per-resource scheduling state, published in the JSON snapshot for debugging.
+
+        Deliberately not a sensor attribute: it is diagnostic detail that would sit in
+        the state machine and the recorder on every update.
+        """
         return {
             key: {
                 "interval": round(self.effective_interval(key) or 0, 1),

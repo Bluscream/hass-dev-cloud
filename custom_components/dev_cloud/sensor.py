@@ -90,7 +90,9 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
         attrs: dict[str, Any] = {
             "username": prof.username,
             "display_name": prof.display_name,
-            "user_id": prof.user_id,
+            # Stringified deliberately: it is an identifier, not a quantity, and the
+            # frontend renders a numeric attribute as "3,318,223".
+            "user_id": str(prof.user_id) if prof.user_id is not None else None,
             "profile_url": prof.profile_url,
             "bio": prof.bio,
             "location": prof.location,
@@ -105,9 +107,6 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             # The account's full JSON snapshot. Lives only here: it is the same URL for
             # every entity on this account, so repeating it on each one is pure noise.
             "json_url": str(self.coordinator.json_url),
-            # Effective refresh interval and measured request cost per resource, so the
-            # adaptive scheduler's choices are visible without reading the JSON dump.
-            "scheduling": data.scheduling or None,
         }
         attrs.update(prof.extra)
         return {k: v for k, v in attrs.items() if v is not None}
@@ -117,7 +116,7 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
     """Repositories sensor with count as state and aggregate totals as attributes."""
 
     _attr_icon = "mdi:source-repository-multiple"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "repos"
     _attr_suggested_display_precision = 0
 
@@ -155,7 +154,7 @@ class DevCloudOrganizationsSensor(DevCloudBaseEntity, SensorEntity):
     """Organizations sensor showing the membership count."""
 
     _attr_icon = "mdi:domain"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "orgs"
     _attr_suggested_display_precision = 0
 
@@ -189,7 +188,7 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
     """Pastes/gists sensor with the paste count as state."""
 
     _attr_icon = "mdi:code-braces"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "pastes"
     _attr_suggested_display_precision = 0
 
@@ -225,7 +224,7 @@ class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
     """Packages sensor for registry platforms."""
 
     _attr_icon = "mdi:package-variant-closed"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "packages"
     _attr_suggested_display_precision = 0
 
@@ -260,7 +259,7 @@ class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
     """Notifications sensor with the unread count as state."""
 
     _attr_icon = "mdi:bell"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "notifications"
     _attr_suggested_display_precision = 0
 
@@ -289,7 +288,7 @@ class DevCloudOpenIssuesSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for total open issues across repositories."""
 
     _attr_icon = "mdi:alert-circle-outline"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "issues"
     _attr_suggested_display_precision = 0
 
@@ -314,7 +313,7 @@ class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for total open pull requests across repositories."""
 
     _attr_icon = "mdi:source-pull"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "PRs"
     _attr_suggested_display_precision = 0
 
@@ -339,7 +338,7 @@ class DevCloudStarsSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for stars across all repositories."""
 
     _attr_icon = "mdi:star"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "stars"
     _attr_suggested_display_precision = 0
 
@@ -362,7 +361,7 @@ class DevCloudWatchersSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for watchers across all repositories."""
 
     _attr_icon = "mdi:eye"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "watchers"
     _attr_suggested_display_precision = 0
 
@@ -381,7 +380,7 @@ class DevCloudForksSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for forks across all repositories."""
 
     _attr_icon = "mdi:source-fork"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "forks"
     _attr_suggested_display_precision = 0
 
@@ -400,6 +399,7 @@ class DevCloudPullsSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for total pull/download count across all repositories or packages."""
 
     _attr_icon = "mdi:download"
+    # TOTAL for the same reason as downloads: image pulls only ever accumulate.
     _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = "pulls"
     _attr_suggested_display_precision = 0
@@ -419,7 +419,7 @@ class DevCloudReleasesSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for total releases count."""
 
     _attr_icon = "mdi:tag-multiple"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "releases"
     _attr_suggested_display_precision = 0
 
@@ -444,7 +444,7 @@ class DevCloudReleaseAssetsSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for total release assets count."""
 
     _attr_icon = "mdi:attachment"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "assets"
     _attr_suggested_display_precision = 0
 
@@ -463,6 +463,9 @@ class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for total downloads across all release assets."""
 
     _attr_icon = "mdi:download"
+    # TOTAL, not MEASUREMENT: a download once served is never un-served, so the
+    # period-over-period change is the meaningful figure. Everything that counts things
+    # which can be deleted is a gauge instead.
     _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = "downloads"
     _attr_suggested_display_precision = 0
@@ -492,7 +495,7 @@ class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for active sponsors count."""
 
     _attr_icon = "mdi:heart"
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "sponsors"
     _attr_suggested_display_precision = 0
 

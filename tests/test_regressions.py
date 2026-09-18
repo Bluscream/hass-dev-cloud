@@ -283,3 +283,51 @@ def test_a_resource_unavailable_without_a_token_is_not_marked_collected() -> Non
             assert "notifications" not in provider.collected_resources()
 
     asyncio.run(check())
+
+
+def test_user_id_is_published_as_a_string() -> None:
+    """A numeric attribute is rendered as a quantity — "3,318,223" — but an id is a label."""
+    import inspect
+
+    from dev_cloud import sensor
+
+    source = inspect.getsource(sensor.DevCloudProfileSensor)
+    assert '"user_id": str(' in source
+
+
+def test_scheduling_is_not_a_sensor_attribute() -> None:
+    """Diagnostic detail belongs in the snapshot, not in the state machine and recorder."""
+    import inspect
+
+    from dev_cloud import sensor
+
+    assert '"scheduling"' not in inspect.getsource(sensor.DevCloudProfileSensor)
+
+
+def test_only_accumulating_counts_use_the_total_state_class() -> None:
+    """TOTAL makes Home Assistant compute a sum, which is meaningless for a count that can
+    fall when something is deleted. It once gave Open Pull Requests a `sum` of 3.0."""
+    import ast
+    from pathlib import Path
+
+    accumulating = {"DevCloudDownloadsSensor", "DevCloudPullsSensor"}
+    tree = ast.parse(Path(sensor_source()).read_text(encoding="utf-8"))
+
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or not node.name.startswith("DevCloud"):
+            continue
+        for stmt in node.body:
+            if (
+                isinstance(stmt, ast.Assign)
+                and isinstance(stmt.targets[0], ast.Name)
+                and stmt.targets[0].id == "_attr_state_class"
+            ):
+                value = ast.unparse(stmt.value).split(".")[-1]
+                expected = "TOTAL" if node.name in accumulating else "MEASUREMENT"
+                assert value == expected, f"{node.name} is {value}, expected {expected}"
+
+
+def sensor_source() -> str:
+    from dev_cloud import sensor
+
+    return str(sensor.__file__)
