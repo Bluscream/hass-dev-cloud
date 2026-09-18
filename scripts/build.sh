@@ -70,7 +70,9 @@ deploy_live() {
   # --delete because `cp -r` only ever adds: a module that has been renamed or split into a
   # package would otherwise linger beside its replacement and shadow it on import.
   # __pycache__ is excluded from deletion so Home Assistant's own bytecode is left alone.
-  rsync -a --delete --exclude='__pycache__' "$SRC_DIR"/ "$DEST_DIR"/
+  # -rlt rather than -a, and --inplace: the destination is a CIFS mount, where rsync's
+  # default write-to-temp-then-rename fails outright, and owner/group cannot be preserved.
+  rsync -rlt --inplace --delete --exclude='__pycache__' "$SRC_DIR"/ "$DEST_DIR"/
   echo "Files deployed!"
 }
 
