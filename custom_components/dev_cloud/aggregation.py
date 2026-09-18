@@ -113,6 +113,10 @@ class Totals:
     packages: int
     package_pulls: int
     package_stars: int
+    security_alerts: int
+    security_alerts_by_severity: dict[str, int]
+    repositories_with_alerts: int
+    highest_cvss: float | None
 
 
 def compute_totals(coordinator: DevCloudCoordinator) -> Totals:
@@ -122,6 +126,12 @@ def compute_totals(coordinator: DevCloudCoordinator) -> Totals:
     counted = counted_repos(coordinator)
     releases = counted_releases(coordinator)
     all_assets = [asset for release in releases for asset in assets(release)]
+
+    alerts = [alert for repo in counted for alert in repo.security_alerts]
+    severities: dict[str, int] = {}
+    for alert in alerts:
+        key = str(alert.get("severity") or "UNKNOWN").lower()
+        severities[key] = severities.get(key, 0) + 1
 
     return Totals(
         repositories=collection_total(coordinator, "repos"),
@@ -140,4 +150,13 @@ def compute_totals(coordinator: DevCloudCoordinator) -> Totals:
         packages=len(data.packages),
         package_pulls=sum(p.pull_count or 0 for p in data.packages),
         package_stars=sum(p.star_count or 0 for p in data.packages),
+        security_alerts=len(alerts),
+        security_alerts_by_severity=severities,
+        repositories_with_alerts=sum(1 for repo in counted if repo.security_alerts),
+        highest_cvss=max((float(a.get("cvss") or 0) for a in alerts), default=None) or None,
     )
+
+
+def counted_security_alerts(coordinator: DevCloudCoordinator) -> list[dict[str, Any]]:
+    """Open vulnerability alerts across the repositories that count for this entry."""
+    return [alert for repo in counted_repos(coordinator) for alert in repo.security_alerts]

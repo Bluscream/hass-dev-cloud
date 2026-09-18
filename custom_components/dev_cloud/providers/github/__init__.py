@@ -494,6 +494,7 @@ class GitHubProvider(BaseDevCloudProvider):
             repo.releases = found.get("releases", repo.releases)
             repo.branches = found.get("branches", repo.branches)
             repo.tags = found.get("tags", repo.tags)
+            repo.security_alerts = found.get("security_alerts", repo.security_alerts)
             watchers = found.get("watchers")
             if isinstance(watchers, int):
                 repo.watchers = watchers

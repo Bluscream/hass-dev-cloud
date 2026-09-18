@@ -70,6 +70,9 @@ EVENT_ORG_REMOVED: Final = "dev_cloud_org_removed"
 EVENT_NEW_DOWNLOADS: Final = "dev_cloud_new_downloads"
 EVENT_NEW_PULLS: Final = "dev_cloud_new_pulls"
 
+EVENT_NEW_SECURITY_ALERT: Final = "dev_cloud_new_security_alert"
+EVENT_SECURITY_ALERTS_RESOLVED: Final = "dev_cloud_security_alerts_resolved"
+
 EVENT_NEW_NOTIFICATION: Final = "dev_cloud_new_notification"
 
 # Platforms

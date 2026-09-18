@@ -274,3 +274,36 @@ def test_every_total_the_sensors_read_exists_on_the_dataclass() -> None:
     }
     assert requested, "expected sensors to read totals"
     assert requested <= names, f"unknown totals: {requested - names}"
+
+
+def test_security_alerts_are_counted_and_broken_down_by_severity() -> None:
+    repo = _repo("o/a")
+    repo.security_alerts = [
+        {"number": 1, "severity": "HIGH", "cvss": 8.1},
+        {"number": 2, "severity": "MODERATE", "cvss": 5.0},
+        {"number": 3, "severity": "HIGH", "cvss": 9.8},
+    ]
+    data = DevCloudData(profile=ProfileData(username="x"), repos=[repo], collected={"repos"})
+    totals = aggregation.compute_totals(_FakeCoordinator(data, include_non_owned_orgs=False))
+
+    assert totals.security_alerts == 3
+    assert totals.security_alerts_by_severity == {"high": 2, "moderate": 1}
+    assert totals.repositories_with_alerts == 1
+    assert totals.highest_cvss == 9.8
+
+
+def test_alerts_in_uncounted_organisations_are_excluded() -> None:
+    """Same rule as every other total."""
+    other = _repo("Other/x")
+    other.security_alerts = [{"number": 1, "severity": "CRITICAL", "cvss": 10.0}]
+    org = OrgData(name="Other", is_owned=False, repos=[other])
+    data = DevCloudData(
+        profile=ProfileData(username="x"), repos=[], orgs=[org], collected={"repos", "orgs"}
+    )
+
+    assert aggregation.compute_totals(
+        _FakeCoordinator(data, include_non_owned_orgs=False)
+    ).security_alerts == 0
+    assert aggregation.compute_totals(
+        _FakeCoordinator(data, include_non_owned_orgs=True)
+    ).security_alerts == 1

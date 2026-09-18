@@ -20,6 +20,7 @@ from ...const import RUNNING_JOBS_CONCURRENCY
 from ...models import OrgData
 from ..base import MAX_PAGES, async_map_limited
 from .queries import (
+    ALERTS_QUERY,
     ASSETS_QUERY,
     GRAPHQL_NESTED_PAGE_SIZE,
     GRAPHQL_PAGE_SIZE,
@@ -28,6 +29,8 @@ from .queries import (
     REPO_RELEASES_QUERY,
     USER_RELEASES_QUERY,
 )
+
+Item = dict[str, Any]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -163,6 +166,46 @@ async def _refs(
         cursor = page.get("endCursor") if page.get("hasNextPage") else None
 
     return refs
+
+
+def _alert(node: Item) -> dict[str, Any]:
+    """Flatten one alert into the fields a notification or dashboard actually uses."""
+    vuln = node.get("securityVulnerability") or {}
+    advisory = vuln.get("advisory") or {}
+    identifiers = {i.get("type"): i.get("value") for i in advisory.get("identifiers") or []}
+    return {
+        "number": node.get("number"),
+        "severity": vuln.get("severity"),
+        "package": (vuln.get("package") or {}).get("name"),
+        "ecosystem": (vuln.get("package") or {}).get("ecosystem"),
+        "ghsa": advisory.get("ghsaId"),
+        "cve": identifiers.get("CVE"),
+        "cvss": (advisory.get("cvss") or {}).get("score"),
+        "summary": advisory.get("summary", "").strip() or None,
+        "url": advisory.get("permalink"),
+        "created_at": node.get("createdAt"),
+    }
+
+
+async def _alerts(
+    graphql: GraphQLCaller, name_with_owner: str, connection: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Flatten an alerts connection, completing it when one page was not enough."""
+    owner, _, name = name_with_owner.partition("/")
+    alerts = [_alert(n) for n in connection.get("nodes") or []]
+
+    page = connection.get("pageInfo") or {}
+    cursor = page.get("endCursor") if page.get("hasNextPage") else None
+    for _ in range(MAX_PAGES):
+        if not cursor:
+            break
+        data = await graphql(ALERTS_QUERY, {"owner": owner, "name": name, "cursor": cursor})
+        conn = ((data.get("repository") or {}).get("vulnerabilityAlerts")) or {}
+        alerts.extend(_alert(n) for n in conn.get("nodes") or [])
+        page = conn.get("pageInfo") or {}
+        cursor = page.get("endCursor") if page.get("hasNextPage") else None
+
+    return alerts
 
 
 async def _releases_for(

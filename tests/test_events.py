@@ -20,12 +20,14 @@ from dev_cloud.const import (
     EVENT_NEW_PR,
     EVENT_NEW_RELEASE,
     EVENT_NEW_REPO,
+    EVENT_NEW_SECURITY_ALERT,
     EVENT_NEW_TAG,
     EVENT_ORG_REMOVED,
     EVENT_TAG_REMOVED,
     EVENT_REPO_ARCHIVED,
     EVENT_REPO_CHANGED,
     EVENT_REPO_REMOVED,
+    EVENT_SECURITY_ALERTS_RESOLVED,
     EVENT_REPO_VISIBILITY_CHANGED,
     EVENT_STARS_CHANGED,
 )
@@ -271,3 +273,54 @@ def test_organisation_downloads_count_towards_the_batch() -> None:
 
     result = events.changes(_snap(orgs=[org_before]), _snap(orgs=[org_after]))
     assert _first(result, EVENT_NEW_DOWNLOADS)["delta"] == 50
+
+
+def _repo_with_alerts(full_name: str, numbers: tuple[int, ...]) -> RepoData:
+    repo = _repo(full_name)
+    repo.security_alerts = [
+        {
+            "number": n,
+            "severity": "HIGH",
+            "package": "jsonwebtoken",
+            "ecosystem": "NPM",
+            "ghsa": f"GHSA-{n}",
+            "cve": f"CVE-2022-{n}",
+            "cvss": 8.1,
+            "summary": "unrestricted key type",
+            "url": f"https://github.com/advisories/GHSA-{n}",
+        }
+        for n in numbers
+    ]
+    return repo
+
+
+def test_each_new_security_alert_gets_its_own_event() -> None:
+    """A new advisory is something to act on, so it arrives whole rather than as a count."""
+    result = events.changes(
+        _snap(repos=[_repo_with_alerts("o/a", (1,))]),
+        _snap(repos=[_repo_with_alerts("o/a", (1, 2))]),
+    )
+    payload = _first(result, EVENT_NEW_SECURITY_ALERT)
+    assert payload["repository"] == "o/a"
+    assert payload["ghsa"] == "GHSA-2"
+    assert payload["cve"] == "CVE-2022-2"
+    assert payload["cvss"] == 8.1
+    assert payload["alert"]["package"] == "jsonwebtoken"
+
+
+def test_resolved_alerts_are_batched_per_repository() -> None:
+    """One dependency bump clears dozens at once — 68 on one repository here."""
+    before = _snap(repos=[_repo_with_alerts("o/a", tuple(range(1, 69)))])
+    after = _snap(repos=[_repo_with_alerts("o/a", (1,))])
+
+    result = events.changes(before, after)
+    assert _types(result).count(EVENT_SECURITY_ALERTS_RESOLVED) == 1
+
+    payload = _first(result, EVENT_SECURITY_ALERTS_RESOLVED)
+    assert payload["resolved"] == 67
+    assert payload["remaining"] == 1
+    assert len(payload["alerts"]) == 67
+
+
+def test_a_repository_with_no_alerts_either_side_is_silent() -> None:
+    assert events.changes(_snap(repos=[_repo("o/a")]), _snap(repos=[_repo("o/a")])) == []

@@ -57,6 +57,7 @@ sensor. **An empty result still counts as collected**: zero unread notifications
 | Downloads | downloads | **total** |
 | Pulls | pulls | **total** |
 | Sponsors | sponsors | measurement |
+| Security Alerts | alerts | measurement |
 | Running Jobs | jobs | measurement |
 
 Only Downloads and Pulls are totals: a download once served is never un-served, so the
@@ -94,7 +95,12 @@ Everything about a repository hangs off that repository:
           "assets": [ { "name": "VRCOSC-Modules.zip", "downloads": 508 } ] }
       ],
       "branches": [ { "name": "main", "sha": "…" } ],
-      "tags":     [ { "name": "v1.0", "sha": "…" } ]
+      "tags":     [ { "name": "v1.0", "sha": "…" } ],
+      "security_alerts": [
+        { "number": 14, "severity": "HIGH", "package": "jsonwebtoken", "ecosystem": "NPM",
+          "ghsa": "GHSA-8cf7-32gw-wr33", "cve": "CVE-2022-23539", "cvss": 8.1,
+          "summary": "…", "url": "https://github.com/advisories/…" }
+      ]
     }
   ],
   "orgs": [ { "name": "…", "is_owned": true, "repos": [ /* same shape */ ] } ]
@@ -333,6 +339,8 @@ anything up.
 | `dev_cloud_new_org` / `_org_removed` | `name`, `organization` |
 | `dev_cloud_new_downloads` | `delta`, `total`, `previous_total`, `assets`, `repositories`, `top_repository`, `top_repository_delta`, `breakdown` |
 | `dev_cloud_new_pulls` | `delta`, `total`, `previous_total`, `packages`, `top_package`, `top_package_delta`, `breakdown` |
+| `dev_cloud_new_security_alert` | `repository`, `alert`, `severity`, `package`, `ecosystem`, `ghsa`, `cve`, `cvss`, `summary`, `url` |
+| `dev_cloud_security_alerts_resolved` | `repository`, `resolved`, `remaining`, `alerts` |
 | `dev_cloud_new_notification` | `title`, `repository`, `url`, `reason`, `subject_type`, `notification` |
 
 `delta` is signed, so one trigger covers a star gained and a star lost.
@@ -358,6 +366,11 @@ deletion.
 
 **Nothing when a collection empties entirely.** Everything vanishing in one poll is far more
 likely to be a bad response than a real deletion of all of it.
+
+**New security alerts arrive individually; resolutions are batched.** A new advisory is
+something to act on, so each gets its own event with the package, GHSA id, CVE and CVSS
+score attached. Resolutions come in bulk — one dependency bump can clear dozens, and one
+repository here has 68 open — so they are summarised per repository.
 
 **Counters are batched, not itemised.** Download and pull counts tick upward constantly, and
 this account holds 3,581 release assets — an event per asset would be unusable. Instead one

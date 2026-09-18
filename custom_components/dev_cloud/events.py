@@ -33,6 +33,7 @@ from .const import (
     EVENT_NEW_PULLS,
     EVENT_NEW_RELEASE,
     EVENT_NEW_REPO,
+    EVENT_NEW_SECURITY_ALERT,
     EVENT_NEW_TAG,
     EVENT_ORG_REMOVED,
     EVENT_PACKAGE_CHANGED,
@@ -45,6 +46,7 @@ from .const import (
     EVENT_REPO_REMOVED,
     EVENT_REPO_RENAMED,
     EVENT_REPO_VISIBILITY_CHANGED,
+    EVENT_SECURITY_ALERTS_RESOLVED,
     EVENT_STARS_CHANGED,
     EVENT_TAG_REMOVED,
 )
@@ -183,6 +185,7 @@ def _one_repo(name: str, old: Item, new: Item) -> list[Event]:
         events.append((EVENT_REPO_CHANGED, {**common, "changed": fields}))
 
     events += _release_changes(name, old, new)
+    events += _security_changes(name, old, new)
     events += _ref_changes(
         name, old, new, "branches", EVENT_NEW_BRANCH, EVENT_BRANCH_REMOVED, "branch"
     )
@@ -311,6 +314,42 @@ def _pull_totals(previous: Item, current: Item) -> list[Event]:
             },
         )
     ]
+
+
+def _security_changes(repository: str, old: Item, new: Item) -> list[Event]:
+    """New vulnerability alerts one by one; resolutions batched.
+
+    A new alert is something to act on, so each gets its own event with the advisory
+    attached. Resolutions arrive in bulk — one dependency bump can clear dozens at once, and
+    one repository here has 68 open — so they are summarised per repository instead.
+    """
+    was = _by(old.get("security_alerts"), "number")
+    now = _by(new.get("security_alerts"), "number")
+    if not was and not now:
+        return []
+
+    events: list[Event] = [
+        (
+            EVENT_NEW_SECURITY_ALERT,
+            {"repository": repository, "alert": now[n], **now[n]},
+        )
+        for n in sorted(now.keys() - was.keys())
+    ]
+
+    resolved = [was[n] for n in sorted(was.keys() - now.keys())]
+    if resolved:
+        events.append(
+            (
+                EVENT_SECURITY_ALERTS_RESOLVED,
+                {
+                    "repository": repository,
+                    "resolved": len(resolved),
+                    "remaining": len(now),
+                    "alerts": resolved,
+                },
+            )
+        )
+    return events
 
 
 def _ref_changes(

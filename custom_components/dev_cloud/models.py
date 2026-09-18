@@ -79,6 +79,9 @@ class RepoData:
     releases: list[dict[str, Any]] = field(default_factory=list)
     branches: list[dict[str, Any]] = field(default_factory=list)
     tags: list[dict[str, Any]] = field(default_factory=list)
+    # Open dependency vulnerability alerts. GitHub only: GitLab gates the equivalent behind
+    # Ultimate and Gitea has none, so elsewhere this stays empty and its sensor is absent.
+    security_alerts: list[dict[str, Any]] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 

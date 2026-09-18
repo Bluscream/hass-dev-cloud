@@ -30,6 +30,28 @@ REF_FIELDS = """
   nodes { name target { oid } }
 """
 
+#: Open dependency alerts. Cost is one node each, so a page of 25 covers the common case
+#: and the rare repository with more is completed by a follow-up query — one account here
+#: has 68 open on a single repository.
+GRAPHQL_ALERTS_PAGE_SIZE = 25
+
+ALERT_FIELDS = """
+  number
+  createdAt
+  securityVulnerability {
+    severity
+    package { name ecosystem }
+    advisory { ghsaId summary permalink cvss { score } identifiers { type value } }
+  }
+"""
+
+REPO_ALERTS = f"""
+  vulnerabilityAlerts(first: {GRAPHQL_ALERTS_PAGE_SIZE}, states: OPEN) {{
+    pageInfo {{ hasNextPage endCursor }}
+    nodes {{ {ALERT_FIELDS} }}
+  }}
+"""
+
 #: The real watcher count. REST's `watchers_count` is a deprecated alias for
 #: `stargazers_count`, and `subscribers_count` — which is the true figure — is only returned
 #: by the single-repository endpoint. Asking here costs one node per repository instead of
@@ -73,6 +95,7 @@ query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
       nodes {{
         nameWithOwner
         {REPO_WATCHERS}
+        {REPO_ALERTS}
         {REPO_REFS}
         releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
           pageInfo {{ hasNextPage endCursor }}
@@ -104,6 +127,7 @@ query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
       nodes {{
         nameWithOwner
         {REPO_WATCHERS}
+        {REPO_ALERTS}
         {REPO_REFS}
         releases(first: $nested, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
           pageInfo {{ hasNextPage endCursor }}
@@ -142,6 +166,17 @@ query($owner: String!, $name: String!, $prefix: String!, $cursor: String) {{
   repository(owner: $owner, name: $name) {{
     refs(refPrefix: $prefix, first: {GRAPHQL_REFS_PAGE_SIZE}, after: $cursor) {{
       {REF_FIELDS}
+    }}
+  }}
+}}
+"""
+
+ALERTS_QUERY = f"""
+query($owner: String!, $name: String!, $cursor: String) {{
+  repository(owner: $owner, name: $name) {{
+    vulnerabilityAlerts(first: {GRAPHQL_ALERTS_PAGE_SIZE}, states: OPEN, after: $cursor) {{
+      pageInfo {{ hasNextPage endCursor }}
+      nodes {{ {ALERT_FIELDS} }}
     }}
   }}
 }}

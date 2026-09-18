@@ -510,6 +510,43 @@ class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):
         return {k: v for k, v in attrs.items() if v is not None}
 
 
+class DevCloudSecurityAlertsSensor(DevCloudBaseEntity, SensorEntity):
+    """Open dependency vulnerability alerts across the counted repositories."""
+
+    _attr_icon = "mdi:shield-alert"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "alerts"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "security_alerts")
+        self._attr_name = "Security Alerts"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return _total(self.coordinator, "security_alerts")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        totals = self.coordinator.totals
+        if totals is None:
+            return {}
+
+        return {
+            "total_alerts": totals.security_alerts,
+            # Severity counts rather than the alerts themselves; the full list is in the
+            # snapshot, where it does not cost a recorder write on every update.
+            **{
+                f"{name}_alerts": count
+                for name, count in totals.security_alerts_by_severity.items()
+            },
+            "affected_repositories": totals.repositories_with_alerts,
+            "highest_cvss": totals.highest_cvss,
+        }
+
+
 class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
     """Sensor for currently running CI workflows / pipelines."""
 
@@ -588,4 +625,6 @@ _OPTIONAL_SENSORS: tuple[
     ),
     (DevCloudPackagesSensor, lambda c: _collected(c, "packages")),
     (DevCloudRunningJobsSensor, lambda c: c.data.running_jobs_count is not None),
+    # Only GitHub reports these, so elsewhere the resource is never collected.
+    (DevCloudSecurityAlertsSensor, lambda c: _collected(c, "repo_detail")),
 )
