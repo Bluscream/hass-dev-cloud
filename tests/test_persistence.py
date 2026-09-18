@@ -44,7 +44,7 @@ def _snapshot() -> dict[str, Any]:
         "profile": {"fetched_at": now, "cost": 1},
         "repos": {"fetched_at": now, "cost": 6},
         "orgs": {"fetched_at": now, "cost": 2},
-        "releases": {"fetched_at": now, "cost": 16},
+        "repo_detail": {"fetched_at": now, "cost": 16},
         "retired_resource": {"fetched_at": now, "cost": 1},
     }
     return storage._serialize("github", "Bluscream", data)
@@ -66,7 +66,7 @@ async def test_restore_means_a_reload_does_not_refetch(provider: Any) -> None:
 
     provider.restore(_snapshot())
     assert not provider.scheduler.should_fetch("repos")
-    assert not provider.scheduler.should_fetch("releases")
+    assert not provider.scheduler.should_fetch("repo_detail")
 
 
 async def test_restore_ignores_resources_that_no_longer_exist(provider: Any) -> None:
@@ -84,19 +84,19 @@ def test_a_child_is_due_again_once_its_parent_moves() -> None:
     sched = ResourceScheduler(
         policies={
             "repos": ResourcePolicy(authenticated=900, anonymous=900, min_cache=0),
-            "releases": ResourcePolicy(
+            "repo_detail": ResourcePolicy(
                 authenticated=3600, anonymous=3600, depends_on=("repos",), min_cache=0
             ),
         },
         has_token=True,
     )
     sched.record_fetch("repos", cost=6)
-    sched.record_fetch("releases", cost=16)
-    assert not sched.should_fetch("releases")
+    sched.record_fetch("repo_detail", cost=16)
+    assert not sched.should_fetch("repo_detail")
 
     time.sleep(0.01)
     sched.record_fetch("repos", cost=6)
-    assert sched.should_fetch("releases"), "parent moved, so the derived data is stale"
+    assert sched.should_fetch("repo_detail"), "parent moved, so the derived data is stale"
 
 
 def test_the_minimum_cache_time_outranks_a_parent_change() -> None:
@@ -104,17 +104,17 @@ def test_the_minimum_cache_time_outranks_a_parent_change() -> None:
     sched = ResourceScheduler(
         policies={
             "repos": ResourcePolicy(authenticated=900, anonymous=900, min_cache=0),
-            "releases": ResourcePolicy(
+            "repo_detail": ResourcePolicy(
                 authenticated=3600, anonymous=3600, depends_on=("repos",), min_cache=1800
             ),
         },
         has_token=True,
     )
-    sched.record_fetch("releases", cost=16)
+    sched.record_fetch("repo_detail", cost=16)
     time.sleep(0.01)
     sched.record_fetch("repos", cost=6)
 
-    assert not sched.should_fetch("releases")
+    assert not sched.should_fetch("repo_detail")
 
 
 def test_persisted_state_round_trips_through_the_scheduler() -> None:
@@ -134,7 +134,7 @@ async def test_restore_rebuilds_the_release_and_ref_detail(provider: Any) -> Non
     are reconstructed from there rather than stored a second time."""
     provider.restore(_snapshot())
 
-    detail = provider._resource_values["releases"]["Bluscream/r"]
+    detail = provider._resource_values["repo_detail"]["Bluscream/r"]
     assert detail["releases"][0]["assets"][0]["downloads"] == 3
     assert detail["branches"][0]["name"] == "main"
     assert detail["tags"][0]["name"] == "v1"
@@ -146,24 +146,24 @@ def test_the_schedule_records_when_each_resource_was_fetched_and_when_it_is_next
     sched = ResourceScheduler(
         policies={
             "notifications": ResourcePolicy(authenticated=300, anonymous=None, min_cache=0),
-            "releases": ResourcePolicy(authenticated=3600, anonymous=None, min_cache=1800),
+            "repo_detail": ResourcePolicy(authenticated=3600, anonymous=None, min_cache=1800),
         },
         has_token=True,
     )
     sched.record_fetch("notifications", cost=1)
-    sched.record_fetch("releases", cost=16)
+    sched.record_fetch("repo_detail", cost=16)
 
     state = sched.persisted_state()
-    assert set(state) == {"notifications", "releases"}
+    assert set(state) == {"notifications", "repo_detail"}
 
-    for key, expected_interval in (("notifications", 300), ("releases", 3600)):
+    for key, expected_interval in (("notifications", 300), ("repo_detail", 3600)):
         entry = state[key]
         datetime.fromisoformat(entry["fetched_at"])  # parses, so it is ISO
         assert entry["interval"] == expected_interval
         assert 0 < entry["next_due_in"] <= max(expected_interval, entry["min_cache"])
 
     # Notifications are the fastest resource, so they come due first.
-    assert state["notifications"]["next_due_in"] < state["releases"]["next_due_in"]
+    assert state["notifications"]["next_due_in"] < state["repo_detail"]["next_due_in"]
 
 
 def test_a_resource_never_fetched_is_absent_from_the_schedule() -> None:

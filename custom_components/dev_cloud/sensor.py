@@ -578,11 +578,11 @@ _OPTIONAL_SENSORS: tuple[
     (DevCloudStarsSensor, lambda c: _collected(c, "repos", "packages")),
     # Watchers come from the GraphQL walk, not the repository listing: REST only exposes a
     # deprecated alias for stars. Without that walk there is no watcher figure to report.
-    (DevCloudWatchersSensor, lambda c: _collected(c, "releases")),
+    (DevCloudWatchersSensor, lambda c: _collected(c, "repo_detail")),
     (DevCloudForksSensor, lambda c: _collected(c, "repos")),
-    (DevCloudReleasesSensor, lambda c: _collected(c, "releases")),
-    (DevCloudReleaseAssetsSensor, lambda c: _collected(c, "releases")),
-    (DevCloudDownloadsSensor, lambda c: _collected(c, "releases")),
+    (DevCloudReleasesSensor, lambda c: _collected(c, "repo_detail")),
+    (DevCloudReleaseAssetsSensor, lambda c: _collected(c, "repo_detail")),
+    (DevCloudDownloadsSensor, lambda c: _collected(c, "repo_detail")),
     (DevCloudPullsSensor, lambda c: any(p.pull_count for p in c.data.packages)),
     (
         DevCloudSponsorsSensor,

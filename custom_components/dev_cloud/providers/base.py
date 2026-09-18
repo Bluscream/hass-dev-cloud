@@ -170,7 +170,7 @@ class BaseDevCloudProvider(ABC):
             if repo.releases or repo.branches or repo.tags
         }
         if detail:
-            self._resource_values["releases"] = detail
+            self._resource_values["repo_detail"] = detail
 
         org_detail = {
             repo.full_name: {
@@ -183,7 +183,7 @@ class BaseDevCloudProvider(ABC):
             if repo.releases or repo.branches or repo.tags
         }
         if org_detail:
-            self._resource_values["org_releases"] = org_detail
+            self._resource_values["org_repo_detail"] = org_detail
 
     async def async_resource[T](
         self,

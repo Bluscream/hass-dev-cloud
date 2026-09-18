@@ -40,7 +40,7 @@ def _data() -> DevCloudData:
             ),
             OrgData(name="Unknown", is_owned=None, repos=[_repo("Unknown/x", stars=999)]),
         ],
-        collected={"repos", "orgs", "releases"},
+        collected={"repos", "orgs", "repo_detail"},
     )
 
 

@@ -128,7 +128,7 @@ def test_budgets_are_tracked_per_quota() -> None:
         policies={
             "repos": ResourcePolicy(authenticated=900, anonymous=3600),
             # Deliberately a short floor, so an exhausted quota visibly stretches it.
-            "releases": ResourcePolicy(authenticated=300, anonymous=None, quota=QUOTA_GRAPHQL),
+            "repo_detail": ResourcePolicy(authenticated=300, anonymous=None, quota=QUOTA_GRAPHQL),
         },
         has_token=True,
     )
@@ -138,13 +138,13 @@ def test_budgets_are_tracked_per_quota() -> None:
     assert sched.budget(QUOTA_REST).remaining == 4900
     assert sched.budget(QUOTA_GRAPHQL).remaining == 0
 
-    sched.record_fetch("releases", cost=20)
+    sched.record_fetch("repo_detail", cost=20)
     sched.record_fetch("repos", cost=6)
 
     # REST is healthy, so its resource keeps its floor.
     assert sched.effective_interval("repos") == 900
     # GraphQL is spent, so its resource waits for the reset rather than retrying into it.
-    releases_interval = sched.effective_interval("releases")
+    releases_interval = sched.effective_interval("repo_detail")
     assert releases_interval is not None
     assert releases_interval > 300
     assert releases_interval == pytest.approx(3600, abs=5)

@@ -66,19 +66,21 @@ class GitHubProvider(BaseDevCloudProvider):
             authenticated=900, anonymous=3600, depends_on=("repos",), min_cache=600
         ),
         "sponsors": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
-        # By far the most expensive: three nested paginated GraphQL connections.
-        "releases": ResourcePolicy(
+        # The GraphQL walk: releases, assets, branches, tags and the real watcher count for
+        # every repository. Named for what it fetches rather than for releases alone, which
+        # is only the largest part of it. By far the most expensive resource here.
+        "repo_detail": ResourcePolicy(
             authenticated=3600,
             anonymous=None,
             quota=QUOTA_GRAPHQL,
             depends_on=("repos",),
             min_cache=1800,
         ),
-        # Fan out over every organisation, so they keep the same slow cadence as releases.
+        # Fan out over every organisation, so they keep the same slow cadence.
         "org_repos": ResourcePolicy(
             authenticated=3600, anonymous=7200, depends_on=("orgs",), min_cache=1800
         ),
-        "org_releases": ResourcePolicy(
+        "org_repo_detail": ResourcePolicy(
             authenticated=3600,
             anonymous=None,
             quota=QUOTA_GRAPHQL,
@@ -596,9 +598,9 @@ class GitHubProvider(BaseDevCloudProvider):
             "sponsors", self._async_fetch_sponsors, (None, None)
         )
         sponsors_count, sponsoring_count = sponsors
-        repo_detail: RepoDetail = await self.async_resource("releases", self._async_releases, {})
+        repo_detail: RepoDetail = await self.async_resource("repo_detail", self._async_releases, {})
         org_detail: RepoDetail = await self.async_resource(
-            "org_releases", lambda: async_fetch_org_releases(self._async_graphql, orgs), {}
+            "org_repo_detail", lambda: async_fetch_org_releases(self._async_graphql, orgs), {}
         )
         self._attach_detail(repos, repo_detail)
         for org in orgs:
