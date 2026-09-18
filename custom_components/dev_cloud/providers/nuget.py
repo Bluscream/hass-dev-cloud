@@ -40,14 +40,25 @@ class NuGetProvider(BaseDevCloudProvider):
         return headers
 
     async def async_validate(self) -> bool:
-        # Check either NuGet search API for packages or public profile page
+        """Accept the account if it owns packages, or failing that, has a profile page.
+
+        The search index only knows accounts that have published, so an account with no
+        packages yet is confirmed via its nuget.org profile instead.
+        """
         search_url = f"{self.SEARCH_URL}/query?q=owner:{self.account_name}&take=1"
         try:
             data, _ = await self.async_get_json(search_url, use_etag=False)
             if isinstance(data, dict) and "data" in data and data.get("totalHits", 0) > 0:
                 return True
-        except Exception:  # noqa: BLE001, S110
-            pass
+        except Exception as err:
+            # Deliberately non-fatal: the profile-page check below can still confirm the
+            # account. Logged rather than swallowed so a real failure leaves evidence —
+            # a silent fallback here once made a search outage look like "user not found".
+            _LOGGER.debug(
+                "NuGet search lookup failed for %s, falling back to the profile page: %s",
+                self.account_name,
+                err,
+            )
 
         # Fallback to checking public profile page on nuget.org
         profile_url = f"https://www.nuget.org/profiles/{self.account_name}"
