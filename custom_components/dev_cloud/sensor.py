@@ -2,8 +2,9 @@
 
 Sensors deliberately carry *only* aggregated counts and scalar metrics in their state
 attributes. The full detail (repository lists, releases, packages, notifications, running
-jobs, ...) is exported to `/local/dev_cloud/<platform>/<account>.json` by `storage.py`, and
-every entity links to it through its `json_url` attribute. See that module for the why.
+jobs, ...) is exported to `/local/dev_cloud/<platform>/<account>.json` by `storage.py`. The
+profile sensor carries the `json_url` pointing at it — just the one entity, since the link is
+identical for every entity on the account. See that module for the why.
 
 Entities are registered purely from what a provider actually returned — there are no
 per-platform hardcoded lists. A sensor with no data behind it is omitted entirely rather
@@ -143,12 +144,15 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             "following": prof.following,
             "rate_limit_remaining": data.rate_limit_remaining,
             "rate_limit_reset": data.rate_limit_reset,
+            # The account's full JSON snapshot. Lives only here: it is the same URL for
+            # every entity on this account, so repeating it on each one is pure noise.
+            "json_url": self.coordinator.json_url,
             # Effective refresh interval and measured request cost per resource, so the
             # adaptive scheduler's choices are visible without reading the JSON dump.
             "scheduling": data.scheduling or None,
         }
         attrs.update(prof.extra)
-        return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
+        return {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
@@ -182,7 +186,7 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
             "total_forks": sum(r.forks for r in repos),
             "total_watchers": sum(r.watchers for r in repos),
         }
-        return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
+        return {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudOrganizationsSensor(DevCloudBaseEntity, SensorEntity):
@@ -207,7 +211,7 @@ class DevCloudOrganizationsSensor(DevCloudBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        return super().extra_state_attributes | {
+        return {
             "total_organizations": len(self.coordinator.data.orgs),
         }
 
@@ -245,7 +249,7 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
             "public_pastes": sum(1 for p in pastes if p.is_public),
             "private_pastes": sum(1 for p in pastes if not p.is_public),
         }
-        return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
+        return {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
@@ -280,7 +284,7 @@ class DevCloudPackagesSensor(DevCloudBaseEntity, SensorEntity):
         if total_pulls > 0:
             attrs["total_pulls"] = total_pulls
 
-        return super().extra_state_attributes | attrs
+        return attrs
 
 
 class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
@@ -306,7 +310,7 @@ class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
         notifications = self.coordinator.data.notifications
-        return super().extra_state_attributes | {
+        return {
             "total_notifications": len(notifications),
             "unread_notifications": sum(1 for n in notifications if n.unread),
         }
@@ -338,7 +342,7 @@ class DevCloudOpenIssuesSensor(DevCloudBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        return super().extra_state_attributes | {"total_open_issues": self.native_value}
+        return {"total_open_issues": self.native_value}
 
 
 class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
@@ -363,7 +367,7 @@ class DevCloudOpenPullRequestsSensor(DevCloudBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        return super().extra_state_attributes | {"total_open_prs": self.native_value}
+        return {"total_open_prs": self.native_value}
 
 
 class DevCloudStarsSensor(DevCloudBaseEntity, SensorEntity):
@@ -471,7 +475,7 @@ class DevCloudReleasesSensor(DevCloudBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        return super().extra_state_attributes | {"total_releases": self.native_value}
+        return {"total_releases": self.native_value}
 
 
 class DevCloudReleaseAssetsSensor(DevCloudBaseEntity, SensorEntity):
@@ -519,7 +523,7 @@ class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if not self.coordinator.data:
             return {}
-        return super().extra_state_attributes | {"total_downloads": self.native_value}
+        return {"total_downloads": self.native_value}
 
 
 class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):
@@ -549,7 +553,7 @@ class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):
             "sponsors": data.sponsors_count,
             "sponsoring": data.sponsoring_count,
         }
-        return super().extra_state_attributes | {k: v for k, v in attrs.items() if v is not None}
+        return {k: v for k, v in attrs.items() if v is not None}
 
 
 class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
@@ -572,7 +576,7 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return super().extra_state_attributes | {
+        return {
             "platform": self.coordinator.platform_id,
             "account": self.coordinator.account_name,
         }

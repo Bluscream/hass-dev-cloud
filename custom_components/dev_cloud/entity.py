@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -54,11 +53,3 @@ class DevCloudBaseEntity(CoordinatorEntity[DevCloudCoordinator]):
             model=f"{SUPPORTED_PLATFORMS.get(platform_id, platform_id.title())} Account",
             configuration_url=coordinator.data.profile.profile_url if coordinator.data else None,
         )
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Link every entity to the full JSON snapshot kept out of the state machine.
-
-        Subclasses that add their own attributes merge this in via ``super()``.
-        """
-        return {"json_url": self.coordinator.json_url}

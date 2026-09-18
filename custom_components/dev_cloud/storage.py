@@ -7,8 +7,8 @@ statically at ``/local/dev_cloud/<platform>/<account>.json``.
 This exists so sensors can keep *only* aggregated counts in their state
 attributes: bulky lists (repositories, releases, packages, notifications, ...)
 blow past HA's 16 KiB attribute limit and get written to the recorder on every
-single state change. The full detail lives in the JSON file instead, and each
-sensor carries a ``json_url`` attribute pointing at it.
+single state change. The full detail lives in the JSON file instead, which the profile
+sensor links to via its ``json_url`` attribute.
 """
 
 from __future__ import annotations
