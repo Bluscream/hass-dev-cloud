@@ -45,6 +45,16 @@ SUPPORTED_PLATFORMS: Final = {
     PLATFORM_NUGET: "NuGet",
 }
 
+PLATFORM_ICONS: Final = {
+    PLATFORM_GITHUB: "mdi:github",
+    PLATFORM_GITLAB: "mdi:gitlab",
+    PLATFORM_GITEA: "mdi:git",
+    PLATFORM_DOCKERHUB: "mdi:docker",
+    PLATFORM_NPM: "mdi:npm",
+    PLATFORM_PYPI: "mdi:language-python",
+    PLATFORM_NUGET: "mdi:microsoft-visual-studio-code",
+}
+
 # Pre-defined public instances for Gitea / Forgejo
 CONF_INSTANCE_PRESET: Final = "instance_preset"
 INSTANCE_CUSTOM: Final = "custom"

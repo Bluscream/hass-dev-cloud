@@ -13,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from . import DevCloudConfigEntry
+from .const import PLATFORM_ICONS
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
 
@@ -69,6 +70,7 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "profile")
         self._attr_name = "Profile"
+        self._attr_icon = PLATFORM_ICONS.get(coordinator.platform_id, "mdi:account-circle")
 
     @property
     def native_value(self) -> StateType:
