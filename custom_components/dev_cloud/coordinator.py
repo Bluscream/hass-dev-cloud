@@ -1,0 +1,109 @@
+"""DataUpdateCoordinator for Developer Cloud Services."""
+
+from __future__ import annotations
+
+import logging
+from datetime import timedelta
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .const import (
+    CONF_ACCOUNT_NAME,
+    CONF_API_TOKEN,
+    CONF_ENABLE_EVENTS,
+    CONF_INSTANCE_URL,
+    CONF_PLATFORM,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_ENABLE_EVENTS,
+    DEFAULT_SCAN_INTERVAL_ANONYMOUS,
+    DEFAULT_SCAN_INTERVAL_AUTHENTICATED,
+    DOMAIN,
+    EVENT_NEW_PACKAGE,
+    EVENT_NEW_REPO,
+)
+from .models import DevCloudData
+from .providers import DevCloudProviderError, get_provider
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
+    """Coordinates polling for a single platform:account entry."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self.entry = entry
+        self.platform_id: str = entry.data[CONF_PLATFORM]
+        self.account_name: str = entry.data[CONF_ACCOUNT_NAME]
+        self.instance_url: str | None = entry.data.get(CONF_INSTANCE_URL)
+        self.api_token: str | None = entry.data.get(CONF_API_TOKEN)
+
+        default_interval = (
+            DEFAULT_SCAN_INTERVAL_AUTHENTICATED
+            if self.api_token
+            else DEFAULT_SCAN_INTERVAL_ANONYMOUS
+        )
+        scan_interval = entry.options.get(CONF_SCAN_INTERVAL, default_interval)
+
+        self.enable_events: bool = entry.options.get(CONF_ENABLE_EVENTS, DEFAULT_ENABLE_EVENTS)
+
+        session = async_get_clientsession(hass)
+        self.provider = get_provider(
+            platform=self.platform_id,
+            session=session,
+            account_name=self.account_name,
+            instance_url=self.instance_url,
+            api_token=self.api_token,
+        )
+
+        self._previous_repos: set[str] = set()
+        self._previous_packages: set[str] = set()
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN} ({self.platform_id}:{self.account_name})",
+            update_interval=timedelta(seconds=scan_interval),
+        )
+
+    async def _async_update_data(self) -> DevCloudData:
+        """Fetch updated data from the provider."""
+        try:
+            data = await self.provider.async_fetch()
+        except DevCloudProviderError as err:
+            raise UpdateFailed(f"Error communicating with {self.platform_id}: {err}") from err
+        except Exception as err:
+            raise UpdateFailed(f"Unexpected error fetching {self.platform_id} data: {err}") from err
+
+        # Event dispatching for new repositories / packages
+        if self.enable_events and self.data is not None:
+            current_repos = {r.full_name or r.name for r in data.repos}
+            new_repos = current_repos - self._previous_repos
+            for repo_name in new_repos:
+                self.hass.bus.async_fire(
+                    EVENT_NEW_REPO,
+                    {
+                        "platform": self.platform_id,
+                        "account": self.account_name,
+                        "repository": repo_name,
+                    },
+                )
+
+            current_pkgs = {p.name for p in data.packages}
+            new_pkgs = current_pkgs - self._previous_packages
+            for pkg_name in new_pkgs:
+                self.hass.bus.async_fire(
+                    EVENT_NEW_PACKAGE,
+                    {
+                        "platform": self.platform_id,
+                        "account": self.account_name,
+                        "package": pkg_name,
+                    },
+                )
+
+        self._previous_repos = {r.full_name or r.name for r in data.repos}
+        self._previous_packages = {p.name for p in data.packages}
+
+        return data

@@ -1,0 +1,44 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select Developer Platform",
+        "description": "Choose the developer cloud service or forge you want to monitor.",
+        "data": {
+          "platform": "Platform"
+        }
+      },
+      "account": {
+        "title": "Configure {platform} Account",
+        "description": "Enter your account username/handle. Providing a personal access token is recommended to avoid rate limits.",
+        "data": {
+          "account_name": "Account / Username",
+          "instance_url": "Instance Base URL",
+          "api_token": "API Token / Personal Access Token (Optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the platform API.",
+      "invalid_auth": "Invalid API token or authentication failed.",
+      "user_not_found": "The specified user account was not found.",
+      "rate_limited": "Platform API rate limit exceeded. Please provide an API token.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This account on this platform is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Developer Cloud Services Options",
+        "description": "Adjust polling interval and event dispatch settings.",
+        "data": {
+          "scan_interval": "Update Interval (seconds)",
+          "enable_events": "Fire Home Assistant events on new repositories or packages"
+        }
+      }
+    }
+  }
+}
