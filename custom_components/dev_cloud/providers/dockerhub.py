@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from aiohttp import ClientSession
@@ -14,6 +15,7 @@ from .base import (
     DevCloudNotFoundError,
     DevCloudProviderError,
 )
+from .scheduling import ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,6 +26,13 @@ class DockerHubProvider(BaseDevCloudProvider):
     platform_id = PLATFORM_DOCKERHUB
     default_base_url = "https://hub.docker.com"
     supports_custom_url = False
+
+    # Docker Hub applies no documented request quota to these endpoints, but pull counts
+    # move slowly, so there is nothing to gain from polling them hard.
+    resource_policies = {
+        "profile": ResourcePolicy(authenticated=1800, anonymous=1800),
+        "packages": ResourcePolicy(authenticated=900, anonymous=1800),
+    }
 
     def __init__(
         self,
@@ -82,68 +91,22 @@ class DockerHubProvider(BaseDevCloudProvider):
             data, _ = await self.async_get_json(user_url, use_etag=False)
             return bool(data)
 
-    async def async_fetch(self) -> DevCloudData:
-        # If PAT provided, ensure JWT token is loaded
-        if self.api_token:
-            await self._async_ensure_jwt_token()
-
-        # Profile lookup
+    async def _async_fetch_profile(self) -> ProfileData:
         user_url = f"{self.base_url}/v2/users/{self.account_name}"
         display_name = self.account_name
         avatar_url = None
         created_at = None
         bio = None
-        try:
+
+        with contextlib.suppress(Exception):
             u_json, _ = await self.async_get_json(user_url)
             if isinstance(u_json, dict):
                 display_name = u_json.get("full_name") or self.account_name
                 avatar_url = u_json.get("gravatar_url")
                 created_at = u_json.get("date_joined")
                 bio = u_json.get("profile_url")
-        except Exception:
-            pass
 
-        # Repositories (Docker images)
-        packages: list[PackageData] = []
-        repos: list[RepoData] = []
-        repos_url = f"{self.base_url}/v2/namespaces/{self.account_name}/repositories?page_size=100"
-        try:
-            r_json, _ = await self.async_get_json(repos_url)
-            results = r_json.get("results", []) if isinstance(r_json, dict) else []
-            for item in results:
-                name = item.get("name", "")
-                full_name = f"{self.account_name}/{name}"
-                pull_count = item.get("pull_count", 0)
-                star_count = item.get("star_count", 0)
-                desc = item.get("description")
-                updated = item.get("last_updated")
-
-                pkg = PackageData(
-                    name=name,
-                    url=f"https://hub.docker.com/r/{full_name}",
-                    description=desc,
-                    pull_count=pull_count,
-                    star_count=star_count,
-                    updated_at=updated,
-                )
-                packages.append(pkg)
-
-                repos.append(
-                    RepoData(
-                        name=name,
-                        full_name=full_name,
-                        url=f"https://hub.docker.com/r/{full_name}",
-                        description=desc,
-                        is_private=bool(item.get("is_private")),
-                        stars=star_count,
-                        updated_at=updated,
-                        extra={"pull_count": pull_count},
-                    )
-                )
-        except Exception as err:
-            _LOGGER.warning("Error fetching Docker Hub repos for %s: %s", self.account_name, err)
-
-        profile = ProfileData(
+        return ProfileData(
             username=self.account_name,
             display_name=display_name,
             avatar_url=avatar_url,
@@ -152,8 +115,67 @@ class DockerHubProvider(BaseDevCloudProvider):
             created_at=created_at,
         )
 
+    async def _async_fetch_packages(self) -> tuple[list[PackageData], list[RepoData]]:
+        """Every image in the namespace, as both a package and a repository entry."""
+        url = f"{self.base_url}/v2/namespaces/{self.account_name}/repositories"
+        packages: list[PackageData] = []
+        repos: list[RepoData] = []
+
+        items = await self.async_get_all_pages(
+            url,
+            size_param="page_size",
+            extract=lambda p: p.get("results", []) if isinstance(p, dict) else [],
+        )
+
+        for item in items:
+            name = item.get("name", "")
+            full_name = f"{self.account_name}/{name}"
+            pull_count = item.get("pull_count", 0)
+            star_count = item.get("star_count", 0)
+            desc = item.get("description")
+            updated = item.get("last_updated")
+
+            packages.append(
+                PackageData(
+                    name=name,
+                    url=f"https://hub.docker.com/r/{full_name}",
+                    description=desc,
+                    pull_count=pull_count,
+                    star_count=star_count,
+                    updated_at=updated,
+                )
+            )
+            repos.append(
+                RepoData(
+                    name=name,
+                    full_name=full_name,
+                    url=f"https://hub.docker.com/r/{full_name}",
+                    description=desc,
+                    is_private=bool(item.get("is_private")),
+                    stars=star_count,
+                    updated_at=updated,
+                    extra={"pull_count": pull_count},
+                )
+            )
+
+        return packages, repos
+
+    async def async_fetch(self) -> DevCloudData:
+        """Assemble a snapshot, refreshing only the resources that are due."""
+        # The PAT is exchanged for a JWT before anything else; both resources need it.
+        if self.api_token:
+            await self._async_ensure_jwt_token()
+
+        profile = await self.async_resource(
+            "profile", self._async_fetch_profile, ProfileData(username=self.account_name)
+        )
+        packages, repos = await self.async_resource(
+            "packages", self._async_fetch_packages, ([], [])
+        )
+
         return DevCloudData(
             profile=profile,
             repos=repos,
             packages=packages,
+            scheduling=self.scheduler.diagnostics(),
         )

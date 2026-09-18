@@ -7,6 +7,7 @@ import logging
 from ..const import PLATFORM_NUGET
 from ..models import DevCloudData, PackageData, ProfileData
 from .base import BaseDevCloudProvider
+from .scheduling import ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -19,6 +20,14 @@ class NuGetProvider(BaseDevCloudProvider):
     supports_custom_url = False
 
     SEARCH_URL = "https://azuresearch-usnc.nuget.org"
+
+    # The NuGet search index is a public CDN; download counts update on its own schedule,
+    # so polling faster than this only re-reads the same numbers.
+    resource_policies = {
+        "packages": ResourcePolicy(authenticated=1800, anonymous=1800),
+    }
+
+    SEARCH_PAGE_SIZE = 100
 
     def get_headers(self) -> dict[str, str]:
         """Return headers with X-NuGet-ApiKey if token is provided."""
@@ -47,45 +56,43 @@ class NuGetProvider(BaseDevCloudProvider):
         ) as resp:
             return resp.status == 200
 
-    async def async_fetch(self) -> DevCloudData:
-        packages: list[PackageData] = []
+    async def _async_fetch_packages(self) -> list[PackageData]:
+        """Every package owned by the account, following NuGet's `skip` offset paging."""
         search_base = self.base_url if "azuresearch" in self.base_url else self.SEARCH_URL
-        url = f"{search_base}/query?q=owner:{self.account_name}&prerelease=true&take=100"
-        total_downloads = 0
-        try:
-            data, _ = await self.async_get_json(url)
-            items = data.get("data", []) if isinstance(data, dict) else []
-            for item in items:
-                name = item.get("id", "")
-                version = item.get("version")
-                desc = item.get("description")
-                dl = item.get("totalDownloads", 0)
-                total_downloads += dl
+        url = f"{search_base}/query?q=owner:{self.account_name}&prerelease=true"
 
-                packages.append(
-                    PackageData(
-                        name=name,
-                        version=version,
-                        url=f"https://www.nuget.org/packages/{name}",
-                        description=desc,
-                        downloads_total=dl,
-                        extra={
-                            "authors": item.get("authors"),
-                            "tags": item.get("tags"),
-                        },
-                    )
-                )
-        except Exception as err:
-            _LOGGER.warning("Error fetching NuGet packages for %s: %s", self.account_name, err)
+        items = await self.async_get_all_offset(
+            url,
+            extract=lambda p: p.get("data", []) if isinstance(p, dict) else [],
+            page_size=self.SEARCH_PAGE_SIZE,
+            offset_param="skip",
+            size_param="take",
+        )
+
+        return [
+            PackageData(
+                name=item.get("id", ""),
+                version=item.get("version"),
+                url=f"https://www.nuget.org/packages/{item.get('id', '')}",
+                description=item.get("description"),
+                downloads_total=item.get("totalDownloads", 0),
+                extra={"authors": item.get("authors"), "tags": item.get("tags")},
+            )
+            for item in items
+        ]
+
+    async def async_fetch(self) -> DevCloudData:
+        """Assemble a snapshot, refreshing only the resources that are due."""
+        packages = await self.async_resource("packages", self._async_fetch_packages, [])
 
         profile = ProfileData(
             username=self.account_name,
             display_name=self.account_name,
             profile_url=f"https://www.nuget.org/profiles/{self.account_name}",
-            extra={"total_downloads": total_downloads},
         )
 
         return DevCloudData(
             profile=profile,
             packages=packages,
+            scheduling=self.scheduler.diagnostics(),
         )

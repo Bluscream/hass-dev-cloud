@@ -252,6 +252,45 @@ class BaseDevCloudProvider(ABC):
 
         return items
 
+    async def async_get_all_offset(
+        self,
+        url: str,
+        extract: Callable[[Any], list[Any]],
+        page_size: int,
+        offset_param: str = "from",
+        size_param: str = "size",
+    ) -> list[Any]:
+        """Follow offset/limit pagination (npm's `from`, NuGet's `skip`) to completion.
+
+        The counterpart to `async_get_all_pages` for search APIs that take a starting
+        offset rather than a page number.
+        """
+        separator = "&" if "?" in url else "?"
+        walker = PageWalker(url, page_size)
+        items: list[Any] = []
+
+        for page in range(MAX_PAGES):
+            offset = page * page_size
+            page_url = f"{url}{separator}{size_param}={page_size}&{offset_param}={offset}"
+            payload, _ = await self.async_get_json(page_url, use_etag=False)
+
+            batch = extract(payload)
+            if not isinstance(batch, list) or not walker.accept(batch):
+                break
+
+            items.extend(batch)
+            if walker.is_last(batch):
+                break
+        else:
+            _LOGGER.warning(
+                "Offset pagination for %s stopped at the %d page safety limit; "
+                "list may be incomplete",
+                url,
+                MAX_PAGES,
+            )
+
+        return items
+
     @abstractmethod
     async def async_fetch(self) -> DevCloudData:
         """Fetch all account information and return a DevCloudData snapshot."""
