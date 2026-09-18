@@ -37,10 +37,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DevCloudConfigEntry) -> 
     with contextlib.suppress(Exception):
         from homeassistant.loader import DATA_INTEGRATIONS
 
+        # The registry may hold an Integration, an in-flight Future, or nothing at all;
+        # only a resolved Integration carries the platform cache we need to invalidate.
         integration = hass.data.get(DATA_INTEGRATIONS, {}).get(DOMAIN)
-        if hasattr(integration, "_cache"):
+        cache = getattr(integration, "_cache", None)
+        if cache is not None:
             for platform in PLATFORMS:
-                integration._cache.pop(f"{DOMAIN}.{platform}", None)
+                cache.pop(f"{DOMAIN}.{platform}", None)
 
     # Re-resolve after the reload above: this module is not itself reloaded, so the
     # module-level import below still points at the pre-reload class object.

@@ -274,7 +274,9 @@ class GitHubProvider(BaseDevCloudProvider):
         payload = resp.data or {}
         return payload.get("data") or payload or {}
 
-    async def _async_release_assets(self, release_id: str, after: str) -> list[dict[str, Any]]:
+    async def _async_release_assets(
+        self, release_id: str, after: str | None
+    ) -> list[dict[str, Any]]:
         """Page through a single release's assets beyond the first page."""
         assets: list[dict[str, Any]] = []
         cursor: str | None = after
@@ -293,7 +295,9 @@ class GitHubProvider(BaseDevCloudProvider):
 
         return assets
 
-    async def _async_repo_releases(self, name_with_owner: str, after: str) -> list[dict[str, Any]]:
+    async def _async_repo_releases(
+        self, name_with_owner: str, after: str | None
+    ) -> list[dict[str, Any]]:
         """Page through one repository's releases beyond the first page."""
         owner, _, name = name_with_owner.partition("/")
         releases: list[dict[str, Any]] = []
@@ -640,38 +644,45 @@ class GitHubProvider(BaseDevCloudProvider):
         releases is re-fetched on its own schedule while cheap ones stay current. Skipped
         resources reuse their previous value, so the snapshot is always complete.
         """
-        profile = await self.async_resource(
+        profile: ProfileData = await self.async_resource(
             "profile", self._async_fetch_profile, ProfileData(username=self.account_name)
         )
-        repos = await self.async_resource("repos", self._async_fetch_repos, [])
-        orgs = await self.async_resource("orgs", self._async_fetch_orgs, [])
+        repos: list[RepoData] = await self.async_resource("repos", self._async_fetch_repos, [])
+        orgs: list[OrgData] = await self.async_resource("orgs", self._async_fetch_orgs, [])
 
         # Attach each organisation's repositories. Whether they feed the account totals is
         # decided per entry by CONF_INCLUDE_NON_OWNED_ORGS, applied in sensor.py — the
         # snapshot always carries the full picture.
-        org_repos = await self.async_resource(
+        org_repos: dict[str, list[RepoData]] = await self.async_resource(
             "org_repos", lambda: self._async_fetch_org_repos(orgs), {}
         )
         for org in orgs:
             org.repos = org_repos.get(org.name, org.repos)
-        pastes = await self.async_resource("pastes", self._async_fetch_pastes, [])
-        notifications = await self.async_resource(
+        pastes: list[PasteData] = await self.async_resource("pastes", self._async_fetch_pastes, [])
+        notifications: list[NotificationData] = await self.async_resource(
             "notifications", self._async_fetch_notifications, []
         )
-        open_issues = await self.async_resource(
+        open_issues: list[dict[str, Any]] = await self.async_resource(
             "issues", lambda: self._async_fetch_search("issue"), []
         )
-        open_prs = await self.async_resource("prs", lambda: self._async_fetch_search("pr"), [])
-        sponsors_count, sponsoring_count = await self.async_resource(
+        open_prs: list[dict[str, Any]] = await self.async_resource(
+            "prs", lambda: self._async_fetch_search("pr"), []
+        )
+        sponsors: tuple[int | None, int | None] = await self.async_resource(
             "sponsors", self._async_fetch_sponsors, (None, None)
         )
-        releases = await self.async_resource("releases", self._async_fetch_all_releases, [])
-        releases = releases + await self.async_resource(
+        sponsors_count, sponsoring_count = sponsors
+        releases: list[dict[str, Any]] = await self.async_resource(
+            "releases", self._async_fetch_all_releases, []
+        )
+        org_releases: list[dict[str, Any]] = await self.async_resource(
             "org_releases", lambda: self._async_fetch_org_releases(orgs), []
         )
-        running_jobs_count, running_jobs = await self.async_resource(
+        releases = releases + org_releases
+        jobs: tuple[int | None, list[dict[str, Any]]] = await self.async_resource(
             "running_jobs", lambda: self._async_fetch_running_jobs(repos), (None, [])
         )
+        running_jobs_count, running_jobs = jobs
 
         return DevCloudData(
             profile=profile,

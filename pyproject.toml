@@ -1,6 +1,6 @@
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.lint]
 # Broad set rather than the default minimum. S (bandit) and ASYNC are worth the noise in an
@@ -19,7 +19,7 @@ select = [
 max-complexity = 12
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 warn_unreachable = true
 warn_return_any = true

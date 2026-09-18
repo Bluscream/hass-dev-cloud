@@ -94,8 +94,10 @@ class NPMProvider(BaseDevCloudProvider):
 
     async def async_fetch(self) -> DevCloudData:
         """Assemble a snapshot, refreshing only the resources that are due."""
-        packages = await self.async_resource("packages", self._async_fetch_packages, [])
-        orgs = await self.async_resource("orgs", self._async_fetch_orgs, [])
+        packages: list[PackageData] = await self.async_resource(
+            "packages", self._async_fetch_packages, []
+        )
+        orgs: list[OrgData] = await self.async_resource("orgs", self._async_fetch_orgs, [])
 
         profile = ProfileData(
             username=self.account_name,

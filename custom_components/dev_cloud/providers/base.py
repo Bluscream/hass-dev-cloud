@@ -6,7 +6,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from aiohttp import ClientSession
 
@@ -128,8 +128,9 @@ class BaseDevCloudProvider(ABC):
         Failures are logged and fall back to the previous value too, so one flaky endpoint
         cannot empty a list that was previously complete.
         """
+        # Values are stored heterogeneously by key, so the cast restores the caller's T.
         if not self.scheduler.should_fetch(key):
-            return self._resource_values.get(key, default)
+            return cast("T", self._resource_values.get(key, default))
 
         before = self.request_count
         try:
@@ -144,12 +145,12 @@ class BaseDevCloudProvider(ABC):
                 self.account_name,
                 err,
             )
-            return self._resource_values.get(key, default)
+            return cast("T", self._resource_values.get(key, default))
         except Exception as err:
             _LOGGER.warning(
                 "Error fetching %s for %s:%s: %s", key, self.platform_id, self.account_name, err
             )
-            return self._resource_values.get(key, default)
+            return cast("T", self._resource_values.get(key, default))
 
         self.scheduler.record_fetch(key, self.request_count - before)
         self._resource_values[key] = value

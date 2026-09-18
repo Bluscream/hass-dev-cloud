@@ -195,22 +195,23 @@ class GiteaProvider(BaseDevCloudProvider):
 
     async def async_fetch(self) -> DevCloudData:
         """Assemble a snapshot, refreshing only the resources that are due."""
-        profile = await self.async_resource(
+        profile: ProfileData = await self.async_resource(
             "profile", self._async_fetch_profile, ProfileData(username=self.account_name)
         )
-        repos = await self.async_resource("repos", self._async_fetch_repos, [])
-        orgs = await self.async_resource("orgs", self._async_fetch_orgs, [])
-        org_repos = await self.async_resource(
+        repos: list[RepoData] = await self.async_resource("repos", self._async_fetch_repos, [])
+        orgs: list[OrgData] = await self.async_resource("orgs", self._async_fetch_orgs, [])
+        org_repos: dict[str, list[RepoData]] = await self.async_resource(
             "org_repos", lambda: self._async_fetch_org_repos(orgs), {}
         )
         for org in orgs:
             org.repos = org_repos.get(org.name, org.repos)
-        notifications = await self.async_resource(
+        notifications: list[NotificationData] = await self.async_resource(
             "notifications", self._async_fetch_notifications, []
         )
-        running_jobs_count, running_jobs = await self.async_resource(
+        jobs: tuple[int | None, list[dict[str, Any]]] = await self.async_resource(
             "running_jobs", lambda: self._async_fetch_running_jobs(repos), (None, [])
         )
+        running_jobs_count, running_jobs = jobs
 
         return DevCloudData(
             profile=profile,

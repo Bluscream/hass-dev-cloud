@@ -167,12 +167,13 @@ class DockerHubProvider(BaseDevCloudProvider):
         if self.api_token:
             await self._async_ensure_jwt_token()
 
-        profile = await self.async_resource(
+        profile: ProfileData = await self.async_resource(
             "profile", self._async_fetch_profile, ProfileData(username=self.account_name)
         )
-        packages, repos = await self.async_resource(
+        bundle: tuple[list[PackageData], list[RepoData]] = await self.async_resource(
             "packages", self._async_fetch_packages, ([], [])
         )
+        packages, repos = bundle
 
         return DevCloudData(
             profile=profile,

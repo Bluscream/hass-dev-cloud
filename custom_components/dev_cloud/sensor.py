@@ -39,9 +39,6 @@ def counted_repos(coordinator: DevCloudCoordinator) -> list[RepoData]:
     rather than every organisation they happen to belong to.
     """
     data = coordinator.data
-    if data is None:
-        return []
-
     repos = list(data.repos)
     for org in data.orgs:
         if coordinator.include_non_owned_orgs or org.is_owned:
@@ -51,12 +48,8 @@ def counted_repos(coordinator: DevCloudCoordinator) -> list[RepoData]:
 
 def counted_releases(coordinator: DevCloudCoordinator) -> list[dict[str, Any]]:
     """Releases belonging to repositories that count toward the totals."""
-    data = coordinator.data
-    if data is None:
-        return []
-
     allowed = {r.full_name for r in counted_repos(coordinator)}
-    return [r for r in data.releases if r.get("repository") in allowed]
+    return [r for r in coordinator.data.releases if r.get("repository") in allowed]
 
 
 async def async_setup_entry(
@@ -71,13 +64,9 @@ async def async_setup_entry(
     """
     coordinator = entry.runtime_data
     entities: list[SensorEntity] = [DevCloudProfileSensor(coordinator)]
-
-    if coordinator.data is not None:
-        entities.extend(
-            sensor_cls(coordinator)
-            for sensor_cls, has_data in _OPTIONAL_SENSORS
-            if has_data(coordinator)
-        )
+    entities.extend(
+        build(coordinator) for build, has_data in _OPTIONAL_SENSORS if has_data(coordinator)
+    )
 
     async_add_entities(entities)
 
@@ -440,7 +429,7 @@ class DevCloudPullsSensor(DevCloudBaseEntity, SensorEntity):
         # Sum from packages or repository extras
         packages_pulls = sum(p.pull_count or 0 for p in self.coordinator.data.packages)
         repos_pulls = sum(
-            r.extra.get("pull_count", 0)
+            int(r.extra.get("pull_count", 0) or 0)
             for r in self.coordinator.data.repos
             if isinstance(r.extra, dict)
         )
@@ -488,7 +477,7 @@ class DevCloudReleaseAssetsSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return sum(len(r.get("assets", ())) for r in counted_releases(self.coordinator))
+        return sum(len(_assets(release)) for release in counted_releases(self.coordinator))
 
 
 class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
@@ -508,9 +497,9 @@ class DevCloudDownloadsSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return None
         return sum(
-            asset.get("downloads", 0)
+            int(asset.get("downloads", 0) or 0)
             for release in counted_releases(self.coordinator)
-            for asset in release.get("assets", ())
+            for asset in _assets(release)
         )
 
     @property
@@ -576,6 +565,12 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
         }
 
 
+def _assets(release: dict[str, Any]) -> list[dict[str, Any]]:
+    """Asset list of a release, normalised so callers never handle a missing key."""
+    assets = release.get("assets")
+    return assets if isinstance(assets, list) else []
+
+
 def _has_pulls(coordinator: DevCloudCoordinator) -> bool:
     """Docker Hub reports pulls on packages; other registries stash it on the repo extra."""
     data = coordinator.data
@@ -587,7 +582,11 @@ def _has_pulls(coordinator: DevCloudCoordinator) -> bool:
 #: Sensor classes paired with the test for whether this account has data behind them.
 #: Evaluated once at platform setup, so a sensor that gains data later appears on reload.
 _OPTIONAL_SENSORS: tuple[
-    tuple[type[DevCloudBaseEntity], Callable[[DevCloudCoordinator], bool]], ...
+    tuple[
+        Callable[[DevCloudCoordinator], SensorEntity],
+        Callable[[DevCloudCoordinator], bool],
+    ],
+    ...,
 ] = (
     (DevCloudRepositoriesSensor, lambda c: bool(c.data.repos)),
     (DevCloudOrganizationsSensor, lambda c: bool(c.data.orgs)),

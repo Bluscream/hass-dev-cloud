@@ -95,7 +95,9 @@ class NuGetProvider(BaseDevCloudProvider):
 
     async def async_fetch(self) -> DevCloudData:
         """Assemble a snapshot, refreshing only the resources that are due."""
-        packages = await self.async_resource("packages", self._async_fetch_packages, [])
+        packages: list[PackageData] = await self.async_resource(
+            "packages", self._async_fetch_packages, []
+        )
 
         profile = ProfileData(
             username=self.account_name,
