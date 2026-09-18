@@ -85,11 +85,6 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             return {}
         data = self.coordinator.data
         prof = data.profile
-        repos = data.repos
-
-        total_stars = sum(r.stars for r in repos)
-        total_forks = sum(r.forks for r in repos)
-        total_watchers = sum(r.watchers for r in repos)
 
         attrs: dict[str, Any] = {
             "username": prof.username,
@@ -104,22 +99,10 @@ class DevCloudProfileSensor(DevCloudBaseEntity, SensorEntity):
             "created_at": prof.created_at,
             "followers": prof.followers,
             "following": prof.following,
-            "total_repositories": prof.public_repos
-            if prof.public_repos is not None
-            else len(repos),
-            "total_stars": total_stars,
-            "total_forks": total_forks,
-            "total_watchers": total_watchers,
-            "total_organizations": len(data.orgs),
-            "total_pastes": prof.total_gists
-            if prof.total_gists is not None
-            else (prof.public_gists if prof.public_gists is not None else len(data.pastes)),
-            "total_packages": len(data.packages) if data.packages else None,
-            "open_issues": data.open_issues_count
-            if data.open_issues_count is not None
-            else sum(r.open_issues for r in repos),
-            "open_pull_requests": data.open_prs_count,
-            "unread_notifications": sum(1 for n in data.notifications if n.unread),
+            "public_repositories": prof.public_repos,
+            "private_repositories": prof.private_repos,
+            "public_pastes": prof.public_gists,
+            "private_pastes": prof.private_gists,
             "rate_limit_remaining": data.rate_limit_remaining,
             "rate_limit_reset": data.rate_limit_reset,
         }
