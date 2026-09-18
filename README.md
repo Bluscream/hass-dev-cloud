@@ -153,54 +153,157 @@ an account that belongs to, say, EpicGames will report their stars as yours.
 
 ---
 
-## Polling
+## Polling, budgets and rate limits
 
-Every collection is fetched to completion, which costs requests — so each is refreshed on its
-own schedule rather than all of them on every poll.
+### Two layers
 
-Each provider declares, per resource, a minimum interval for authenticated and anonymous use.
-The scheduler then only ever makes those intervals **longer**:
+Polling happens at two levels, and the coarser one wins.
 
-- **Budget-aware.** Rate-limit headers are tracked per quota. GitHub bills REST per request
-  and GraphQL in points, against separate allowances, so a healthy REST budget cannot mask an
-  exhausted GraphQL one. When an allowance is spent, the resource waits for the reset rather
-  than retrying into it.
-- **Cost-measured.** What a resource actually spent is measured, not guessed.
-- **Backed off on failure.** Repeated failures widen the interval, because against a
-  rate-limited endpoint the retries are what prolong the block.
-- **Chained.** Resources declare what they are derived from — releases from repositories,
-  organisation releases from organisations. Refreshing a parent marks its children due,
-  subject to their own floor, so refreshing the repository list does not drag every
-  organisation's releases along with it.
+**The coordinator** wakes on the entry's scan interval — 10 minutes authenticated, 30
+anonymous, adjustable down to 60 seconds. Nothing is fetched between wakeups.
 
-Skipped resources keep serving their last known value, so the snapshot is always complete.
+**Each resource** then decides for itself whether it is due. A resource is a collection the
+provider knows how to fetch: `repos`, `orgs`, `notifications`, `repo_detail` and so on. Every
+provider declares, per resource, a minimum interval for authenticated and anonymous use:
 
-The whole schedule is published in the snapshot's `resources` block — when each collection
-was last fetched, when it is next due, what it cost, and which quota it spends:
+```python
+"notifications": ResourcePolicy(authenticated=300, anonymous=None),
+"repos":         ResourcePolicy(authenticated=900, anonymous=3600),
+```
+
+`None` means the resource is unavailable in that mode and is never fetched at all — which is
+also what stops its sensor being created.
+
+So a resource with a 300-second interval on an entry polling every 600 seconds refreshes
+every 600 seconds. Lowering the scan interval makes the per-resource floors the binding
+constraint instead.
+
+### The scheduler only ever slows things down
+
+A declared interval is a floor, never a target. Four things can push a resource further out,
+and nothing brings it in.
+
+**1. The remaining budget.** Rate-limit headers are recorded as they arrive. The sustainable
+request rate is
+
+```
+rate = (remaining × 0.25) ÷ seconds_until_reset
+```
+
+— a quarter of what is left, so the integration never spends the whole allowance and leaves
+room for the config flow, other tools sharing the token, and you. If a resource's measured
+cost cannot fit at that rate, its interval stretches until it can:
+
+```
+interval = clamp(max(declared_floor, cost ÷ rate), floor, 6 hours)
+```
+
+**2. Exhaustion, which is not the same as ignorance.** A budget with `0` remaining and one
+that has never been observed are different states. Unknown keeps the declared floor.
+Exhausted waits for the reset instead of retrying into a wall.
+
+**3. Failures.** Only a successful fetch used to update the timestamp, which meant a failing
+resource was retried on *every* poll — and against a rate-limited endpoint the retries are
+what prolong the block. Consecutive failures now double the interval, up to four doublings,
+and a success clears it.
+
+**4. Nothing.** There is no mechanism that shortens an interval below its declared floor.
+
+### Cost is measured, not guessed
+
+Every HTTP call and GraphQL query increments a counter, and each resource records what it
+actually spent. A resource never yet fetched is assumed to cost 5, deliberately pessimistic
+so the first polls back off rather than stampede.
+
+### Quotas are tracked separately
+
+A platform can meter several allowances independently, and conflating them hides the one that
+matters. GitHub bills **REST per request** (5000/hour authenticated, 60 anonymous) and
+**GraphQL in points** (5000/hour) against entirely separate budgets that drain and reset on
+their own schedules.
+
+Each resource declares which it spends, so a healthy REST reading cannot mask an exhausted
+GraphQL one:
+
+| Quota | GitHub resources |
+| :--- | :--- |
+| `rest` | profile, repos, orgs, pastes, notifications, issues, prs, org_repos, running_jobs |
+| `graphql` | repo_detail, org_repo_detail, sponsors |
+
+### GraphQL is billed on what you ask for
+
+This is the part that is easy to get wrong. GitHub charges roughly **one point per hundred
+nodes a query requests** — computed from the `first:` values multiplied down each path,
+*whether or not that many exist*. A query asking for 100 releases on a repository with two
+still pays for 100.
+
+The repository walk therefore uses small pages and completes the overflow with follow-up
+queries, rather than asking for the maximum allowed:
+
+```
+nodes per repository = 1 + 10 releases + (10 × 10 assets) + (2 × 50 refs) = 211
+                     ≈ 2.11 points
+
+930 repositories     ≈ 1,960 points of the 5,000/hour budget
+```
+
+Asking for 100 refs instead of 50 would bill every repository for refs it does not have, at
+2,890 points. The lists stay complete either way — a repository with more than fifty tags
+gets a second query.
+
+For comparison, the same data over REST costs one request per repository for releases and
+two more for branches and tags: around 2,800 requests against the REST allowance.
+
+### Dependencies
+
+Resources declare what they are derived from, so a chain can be reused rather than rebuilt:
+
+```
+org_repo_detail  ←  org_repos  ←  orgs
+repo_detail      ←  repos
+issues, prs      ←  repos
+running_jobs     ←  repos
+```
+
+Refreshing a parent marks its children due, because they were built from inputs that have
+since moved. A `min_cache` floor outranks that, so refreshing the repository list does not
+drag every organisation's releases along on the next poll.
+
+### What a skipped resource does
+
+Nothing is lost. A resource that is not due keeps serving its last value, so the snapshot and
+the sensors are always complete — they are just not all equally fresh. The `resources` block
+records exactly how fresh each one is.
+
+### Reading the schedule
+
+Every decision above is published, so pacing is inspectable rather than opaque:
 
 ```jsonc
 "resources": {
-  "notifications": { "fetched_at": "…", "next_due_in": 280.0, "interval": 300,
+  "notifications": { "fetched_at": "2026-09-18T21:41:37+00:00", "next_due_in": 280.0,
+                     "interval": 300, "min_cache": 300.0,
                      "cost": 1, "quota": "rest", "failures": 0 },
-  "repo_detail":   { "fetched_at": "…", "next_due_in": 1200.0, "interval": 3600,
+  "repo_detail":   { "fetched_at": "2026-09-18T21:01:57+00:00", "next_due_in": 1200.0,
+                     "interval": 3600, "min_cache": 1800,
                      "cost": 16, "quota": "graphql", "failures": 0 }
 }
 ```
 
-That block is read back on startup, which is what stops a redeploy re-downloading everything.
+`next_due_in` is computed by the same code path that decides whether to fetch, so it is the
+decision rather than a second implementation of it.
 
-### GitHub specifics
+That block is read back on startup. Without it every reload would begin with all timestamps
+at zero and refetch the entire account — which is how a handful of redeploys in one afternoon
+exhausted a GraphQL budget during development.
 
-Releases, assets, branches, tags and watcher counts come from a single GraphQL walk rather
-than a request per repository. GraphQL bills on what a query *asks for*, so page sizes are
-chosen against that budget rather than against the maximum allowed.
+### If you are hitting limits
 
-If GraphQL is unavailable — its budget spent, or the token cannot use it — releases fall back
-to the REST endpoint, which bills the separate REST allowance at one request per repository.
-Branches and tags are not fetched on that path; each would be another request per repository,
-which is the cost the fallback exists to avoid.
-
----
+- Turn **Get detailed results** off for accounts you want counted but not catalogued.
+- Raise the scan interval; the per-resource floors already prevent most work, but the
+  coordinator still wakes.
+- Check the `failures` and `next_due_in` fields in the snapshot before assuming something is
+  broken — a resource may simply be waiting out a budget.
 
 ## Events
 
