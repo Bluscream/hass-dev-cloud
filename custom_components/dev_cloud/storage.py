@@ -102,10 +102,29 @@ def _build_json_path(hass: HomeAssistant, platform: str, account: str) -> Path:
     return Path(hass.config.path("www", WWW_SUBDIR, platform, f"{slugify_account(account)}.json"))
 
 
+def _drop_totals_with_a_list(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Remove any reported total whose collection is present in the same payload.
+
+    `totals` carries a figure only for collections that were not enumerated. Publishing one
+    beside its list would hand consumers two answers to the same question, and the list is
+    always the authoritative one.
+    """
+    totals = snapshot.get("totals")
+    if not isinstance(totals, dict):
+        return snapshot
+
+    snapshot["totals"] = {
+        field: value for field, value in totals.items() if not snapshot.get(field)
+    }
+    return snapshot
+
+
 def _serialize(platform: str, account: str, data: DevCloudData) -> dict[str, Any]:
     """Build the full JSON payload for one account snapshot."""
     snapshot = _prune(
-        _redact({k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS})
+        _drop_totals_with_a_list(
+            _redact({k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS})
+        )
     )
     return {
         "platform": platform,

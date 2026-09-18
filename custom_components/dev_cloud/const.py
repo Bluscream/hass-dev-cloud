@@ -15,6 +15,7 @@ CONF_API_TOKEN: Final = "api_token"  # noqa: S105 - config key name, not a secre
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_ENABLE_EVENTS: Final = "enable_events"
 CONF_INCLUDE_NON_OWNED_ORGS: Final = "include_non_owned_orgs"
+CONF_DETAILED_RESULTS: Final = "detailed_results"
 
 # Default values
 DEFAULT_SCAN_INTERVAL_AUTHENTICATED: Final = 600  # 10 minutes
@@ -23,6 +24,9 @@ DEFAULT_ENABLE_EVENTS: Final = True
 # Off by default: most org memberships are in somebody else's organisation, and folding
 # their repositories into the account's totals makes those totals describe other people.
 DEFAULT_INCLUDE_NON_OWNED_ORGS: Final = False
+# On by default so existing entries keep the data they already report. Turning it off trades
+# the per-item lists for the summary totals the API hands back in one or two requests.
+DEFAULT_DETAILED_RESULTS: Final = True
 MIN_SCAN_INTERVAL: Final = 60
 
 # Running CI jobs have to be queried per repository on every forge, so the fan-out is capped

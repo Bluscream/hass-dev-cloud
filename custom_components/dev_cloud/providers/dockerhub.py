@@ -42,8 +42,9 @@ class DockerHubProvider(BaseDevCloudProvider):
         account_name: str,
         base_url: str | None = None,
         api_token: str | None = None,
+        detailed: bool = True,
     ) -> None:
-        super().__init__(session, account_name, base_url, api_token)
+        super().__init__(session, account_name, base_url, api_token, detailed)
         self._jwt_token: str | None = None
 
     async def _async_ensure_jwt_token(self) -> str | None:

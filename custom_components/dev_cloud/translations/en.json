@@ -22,10 +22,12 @@
           "account_name": "Account / Username",
           "instance_url": "Instance Base URL",
           "api_token": "API Token / Personal Access Token (Optional)",
-          "include_non_owned_orgs": "Totals include non-owned organisations"
+          "include_non_owned_orgs": "Totals include non-owned organisations",
+          "detailed_results": "Get detailed results (consumes a lot more rate limit)"
         },
         "data_description": {
-          "include_non_owned_orgs": "Count repositories from organisations you are only a member of towards the stars, forks, releases, assets and downloads totals. Organisations you own always count."
+          "include_non_owned_orgs": "Count repositories from organisations you are only a member of towards the stars, forks, releases, assets and downloads totals. Organisations you own always count.",
+          "detailed_results": "Enumerate every repository, organisation, paste, issue, pull request and release. Turn this off to fetch only the summary totals the platform reports, which costs a couple of requests instead of hundreds."
         }
       }
     },
@@ -49,10 +51,12 @@
         "data": {
           "scan_interval": "Update Interval (seconds)",
           "enable_events": "Fire Home Assistant events on new repositories or packages",
-          "include_non_owned_orgs": "Totals include non-owned organisations"
+          "include_non_owned_orgs": "Totals include non-owned organisations",
+          "detailed_results": "Get detailed results (consumes a lot more rate limit)"
         },
         "data_description": {
-          "include_non_owned_orgs": "Count repositories from organisations you are only a member of towards the stars, forks, releases, assets and downloads totals. Organisations you own always count."
+          "include_non_owned_orgs": "Count repositories from organisations you are only a member of towards the stars, forks, releases, assets and downloads totals. Organisations you own always count.",
+          "detailed_results": "Enumerate every repository, organisation, paste, issue, pull request and release. Turn this off to fetch only the summary totals the platform reports, which costs a couple of requests instead of hundreds."
         }
       }
     }

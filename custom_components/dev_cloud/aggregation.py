@@ -41,3 +41,17 @@ def assets(release: dict[str, Any]) -> list[dict[str, Any]]:
     """Asset list of a release, normalised so callers never handle a missing key."""
     assets = release.get("assets")
     return assets if isinstance(assets, list) else []
+
+
+def collection_total(coordinator: DevCloudCoordinator, field: str) -> int | None:
+    """Size of a collection, whether or not it was enumerated.
+
+    In detailed mode the list is complete and its length is authoritative. In summary mode
+    the list is absent and the provider publishes the total the API reported instead — which
+    is why that total exists only when there is no list to measure.
+    """
+    data = coordinator.data
+    items = getattr(data, field, None)
+    if items:
+        return len(items)
+    return data.totals.get(field)

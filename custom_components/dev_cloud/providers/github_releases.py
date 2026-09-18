@@ -13,7 +13,7 @@ but one callable.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from ..const import RUNNING_JOBS_CONCURRENCY
@@ -29,6 +29,9 @@ from .github_queries import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+#: Fetches one REST page of a repository's releases. The fallback needs nothing else.
+RestPager = Callable[[str, dict[str, Any] | None], Awaitable[list[Any]]]
 
 #: Runs a GraphQL document with variables and returns the unwrapped `data` envelope.
 type GraphQLCaller = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -173,4 +176,46 @@ async def _releases_for(
             break
         cursor = repo_page.get("endCursor")
 
+    return releases
+
+
+def _rest_release(name_with_owner: str, release: dict[str, Any]) -> dict[str, Any]:
+    """Map a REST release payload into the same shape the GraphQL walk produces."""
+    assets = release.get("assets") or []
+    return {
+        "repository": name_with_owner,
+        "name": release.get("name") or release.get("tag_name"),
+        "tag": release.get("tag_name"),
+        "published_at": release.get("published_at"),
+        "url": release.get("html_url"),
+        "assets": [
+            {"name": a.get("name"), "downloads": a.get("download_count", 0)} for a in assets
+        ],
+    }
+
+
+async def async_fetch_releases_via_rest(
+    pager: RestPager, repos: Sequence[str], concurrency: int
+) -> list[dict[str, Any]]:
+    """Collect releases over REST, one paginated call per repository.
+
+    The fallback for when GraphQL is unavailable — its budget is spent, or the token cannot
+    use it. REST bills per request rather than in points, so this trades a much larger
+    request count for not touching the GraphQL allowance at all. That makes it markedly more
+    expensive per release than the GraphQL walk, which is why it is a fallback and not the
+    default path.
+    """
+
+    async def _fetch(name_with_owner: str) -> list[dict[str, Any]]:
+        items = await pager(f"/repos/{name_with_owner}/releases", None)
+        return [_rest_release(name_with_owner, r) for r in items if isinstance(r, dict)]
+
+    results = await async_map_limited(list(repos), _fetch, concurrency)
+
+    releases: list[dict[str, Any]] = []
+    for result in results:
+        if isinstance(result, BaseException):
+            _LOGGER.debug("REST release listing failed: %s", result)
+            continue
+        releases.extend(result)
     return releases

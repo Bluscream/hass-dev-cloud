@@ -79,3 +79,42 @@ def test_assets_helper_tolerates_a_missing_or_malformed_key() -> None:
     assert aggregation.assets({}) == []
     assert aggregation.assets({"assets": None}) == []
     assert aggregation.assets({"assets": [{"downloads": 1}]}) == [{"downloads": 1}]
+
+
+def test_collection_total_prefers_the_list_when_it_was_enumerated() -> None:
+    coordinator = _coordinator(include=False)
+    assert aggregation.collection_total(coordinator, "repos") == 1
+
+
+def test_collection_total_falls_back_to_the_reported_total() -> None:
+    """Summary mode does not enumerate, so the API's own figure stands in."""
+    data = DevCloudData(profile=ProfileData(username="x"), totals={"repos": 580, "pastes": 191})
+    coordinator = _FakeCoordinator(data, include_non_owned_orgs=False)
+
+    assert aggregation.collection_total(coordinator, "repos") == 580
+    assert aggregation.collection_total(coordinator, "pastes") == 191
+
+
+def test_collection_total_is_none_when_neither_exists() -> None:
+    """Which is what keeps the sensor unregistered rather than reporting a false zero."""
+    data = DevCloudData(profile=ProfileData(username="x"))
+    coordinator = _FakeCoordinator(data, include_non_owned_orgs=False)
+
+    assert aggregation.collection_total(coordinator, "repos") is None
+
+
+def test_a_reported_total_never_coexists_with_the_list_it_describes() -> None:
+    """The totals map exists precisely because there is no list to measure; carrying both
+    would reintroduce the duplication the snapshot format forbids."""
+    from dev_cloud import storage
+
+    data = DevCloudData(
+        profile=ProfileData(username="x"),
+        repos=[_repo("o/r")],
+        totals={"repos": 580},
+    )
+    payload = storage._serialize("github", "x", data)
+
+    assert not (payload.get("repos") and payload.get("totals", {}).get("repos")), (
+        "a total and its list must not both be published"
+    )

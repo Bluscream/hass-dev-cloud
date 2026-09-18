@@ -45,6 +45,7 @@ def get_provider(
     account_name: str,
     instance_url: str | None = None,
     api_token: str | None = None,
+    detailed: bool = True,
 ) -> BaseDevCloudProvider:
     """Return an instantiated provider for the given platform."""
     provider_cls = PROVIDER_REGISTRY.get(platform)
@@ -55,6 +56,7 @@ def get_provider(
         account_name=account_name,
         base_url=instance_url,
         api_token=api_token,
+        detailed=detailed,
     )
 
 

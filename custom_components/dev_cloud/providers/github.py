@@ -26,7 +26,11 @@ from .base import (
     async_map_limited,
 )
 from .github_queries import SPONSORS_QUERY
-from .github_releases import async_fetch_all_releases, async_fetch_org_releases
+from .github_releases import (
+    async_fetch_all_releases,
+    async_fetch_org_releases,
+    async_fetch_releases_via_rest,
+)
 from .scheduling import QUOTA_GRAPHQL, PageWalker, ResourcePolicy
 
 _LOGGER = logging.getLogger(__name__)
@@ -72,8 +76,11 @@ class GitHubProvider(BaseDevCloudProvider):
         account_name: str,
         base_url: str | None = None,
         api_token: str | None = None,
+        detailed: bool = True,
     ) -> None:
-        super().__init__(session, account_name, base_url, api_token)
+        super().__init__(session, account_name, base_url, api_token, detailed)
+        # Filled by the profile fetch; surfaced only in summary mode.
+        self._reported_totals: dict[str, int] = {}
         self._api = GitHubAPI(
             token=self.api_token,
             session=self.session,
@@ -260,6 +267,17 @@ class GitHubProvider(BaseDevCloudProvider):
         self._observe_rate_limit(user_resp)
         user = user_resp.data
 
+        # The same response carries the collection totals. They are only published when the
+        # matching list is not enumerated, so they never duplicate a length a client can take.
+        self._reported_totals = {
+            key: value
+            for key, value in (
+                ("repos", user.public_repos),
+                ("pastes", user.public_gists),
+            )
+            if isinstance(value, int)
+        }
+
         return ProfileData(
             username=user.login or self.account_name,
             display_name=user.name,
@@ -443,6 +461,30 @@ class GitHubProvider(BaseDevCloudProvider):
             (user.get("sponsorshipsAsSponsor") or {}).get("totalCount"),
         )
 
+    async def _async_releases(self) -> list[dict[str, Any]]:
+        """Releases for the account's own repositories, over GraphQL where possible.
+
+        GraphQL is tried first because it returns every release and asset in a handful of
+        queries. When it is unavailable — its points budget is spent, or the token cannot
+        use it — the same data is rebuilt over REST, which bills a separate allowance.
+        """
+        try:
+            return await async_fetch_all_releases(self._async_graphql, self.account_name)
+        except Exception as err:
+            _LOGGER.info(
+                "GitHub GraphQL unavailable for %s (%s); falling back to the REST releases "
+                "endpoint, which costs one request per repository",
+                self.account_name,
+                err,
+            )
+
+        repos: list[RepoData] = self._resource_values.get("repos", [])
+        return await async_fetch_releases_via_rest(
+            self._async_all_pages,
+            [r.full_name for r in repos if r.full_name and not r.is_archived],
+            RUNNING_JOBS_CONCURRENCY,
+        )
+
     async def async_fetch(self) -> DevCloudData:
         """Assemble a snapshot, refreshing only the resources that are due.
 
@@ -453,6 +495,17 @@ class GitHubProvider(BaseDevCloudProvider):
         profile: ProfileData = await self.async_resource(
             "profile", self._async_fetch_profile, ProfileData(username=self.account_name)
         )
+
+        if not self.detailed:
+            # Summary mode: the profile response already carried the totals, so stop here
+            # rather than spending a request per page of every collection.
+            return DevCloudData(
+                profile=profile,
+                totals=dict(self._reported_totals),
+                rate_limit_remaining=self.scheduler.budget().remaining,
+                scheduling=self.scheduler.diagnostics(),
+            )
+
         repos: list[RepoData] = await self.async_resource("repos", self._async_fetch_repos, [])
         orgs: list[OrgData] = await self.async_resource("orgs", self._async_fetch_orgs, [])
 
@@ -479,7 +532,7 @@ class GitHubProvider(BaseDevCloudProvider):
         )
         sponsors_count, sponsoring_count = sponsors
         releases: list[dict[str, Any]] = await self.async_resource(
-            "releases", lambda: async_fetch_all_releases(self._async_graphql, self.account_name), []
+            "releases", self._async_releases, []
         )
         org_releases: list[dict[str, Any]] = await self.async_resource(
             "org_releases", lambda: async_fetch_org_releases(self._async_graphql, orgs), []

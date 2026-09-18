@@ -25,7 +25,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from . import DevCloudConfigEntry
-from .aggregation import assets, counted_releases, counted_repos
+from .aggregation import assets, collection_total, counted_releases, counted_repos
 from .const import PLATFORM_ICONS
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
@@ -122,7 +122,7 @@ class DevCloudRepositoriesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return len(self.coordinator.data.repos)
+        return collection_total(self.coordinator, "repos")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -199,7 +199,7 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
     def native_value(self) -> StateType:
         if not self.coordinator.data:
             return None
-        return len(self.coordinator.data.pastes)
+        return collection_total(self.coordinator, "pastes")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -550,9 +550,9 @@ _OPTIONAL_SENSORS: tuple[
     ],
     ...,
 ] = (
-    (DevCloudRepositoriesSensor, lambda c: bool(c.data.repos)),
+    (DevCloudRepositoriesSensor, lambda c: collection_total(c, "repos") is not None),
     (DevCloudOrganizationsSensor, lambda c: bool(c.data.orgs)),
-    (DevCloudPastesSensor, lambda c: bool(c.data.pastes)),
+    (DevCloudPastesSensor, lambda c: collection_total(c, "pastes") is not None),
     (DevCloudNotificationsSensor, lambda c: bool(c.data.notifications)),
     (
         DevCloudOpenIssuesSensor,

@@ -138,6 +138,10 @@ class DevCloudData:
     # Each release carries its own `assets` list, so release, asset, and download totals are
     # all derived from this one structure rather than stored alongside it.
     releases: list[dict[str, Any]] = field(default_factory=list)
+    # Totals the API reported for collections that were *not* enumerated, keyed by the field
+    # they describe ("repos", "pastes", ...). Populated only when the matching list is absent,
+    # so nothing here ever duplicates a len() a consumer could take itself.
+    totals: dict[str, int] = field(default_factory=dict)
     rate_limit_remaining: int | None = None
     rate_limit_reset: int | None = None
     # Per-resource polling state (effective interval, measured request cost, age), so the

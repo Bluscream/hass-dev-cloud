@@ -14,11 +14,13 @@ from yarl import URL
 from .const import (
     CONF_ACCOUNT_NAME,
     CONF_API_TOKEN,
+    CONF_DETAILED_RESULTS,
     CONF_ENABLE_EVENTS,
     CONF_INCLUDE_NON_OWNED_ORGS,
     CONF_INSTANCE_URL,
     CONF_PLATFORM,
     CONF_SCAN_INTERVAL,
+    DEFAULT_DETAILED_RESULTS,
     DEFAULT_ENABLE_EVENTS,
     DEFAULT_INCLUDE_NON_OWNED_ORGS,
     DEFAULT_SCAN_INTERVAL_ANONYMOUS,
@@ -57,6 +59,12 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
             CONF_INCLUDE_NON_OWNED_ORGS, DEFAULT_INCLUDE_NON_OWNED_ORGS
         )
 
+        # Passed to the provider: it decides how much to enumerate, since only it knows
+        # which of its endpoints are cheap.
+        self.detailed_results: bool = entry.options.get(
+            CONF_DETAILED_RESULTS, DEFAULT_DETAILED_RESULTS
+        )
+
         session = async_get_clientsession(hass)
         self.provider = get_provider(
             platform=self.platform_id,
@@ -64,6 +72,7 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
             account_name=self.account_name,
             instance_url=self.instance_url,
             api_token=self.api_token,
+            detailed=self.detailed_results,
         )
 
         # Public URL of this account's full JSON snapshot, exposed on every sensor so the

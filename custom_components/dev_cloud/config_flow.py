@@ -32,12 +32,14 @@ from homeassistant.helpers.selector import (
 from .const import (
     CONF_ACCOUNT_NAME,
     CONF_API_TOKEN,
+    CONF_DETAILED_RESULTS,
     CONF_ENABLE_EVENTS,
     CONF_INCLUDE_NON_OWNED_ORGS,
     CONF_INSTANCE_PRESET,
     CONF_INSTANCE_URL,
     CONF_PLATFORM,
     CONF_SCAN_INTERVAL,
+    DEFAULT_DETAILED_RESULTS,
     DEFAULT_ENABLE_EVENTS,
     DEFAULT_INCLUDE_NON_OWNED_ORGS,
     DEFAULT_SCAN_INTERVAL_ANONYMOUS,
@@ -241,7 +243,10 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
                     options = {
                         CONF_INCLUDE_NON_OWNED_ORGS: user_input.get(
                             CONF_INCLUDE_NON_OWNED_ORGS, DEFAULT_INCLUDE_NON_OWNED_ORGS
-                        )
+                        ),
+                        CONF_DETAILED_RESULTS: user_input.get(
+                            CONF_DETAILED_RESULTS, DEFAULT_DETAILED_RESULTS
+                        ),
                     }
                     return self.async_create_entry(
                         title=self._entry_title(platform, account, instance_url),
@@ -253,6 +258,9 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_ACCOUNT_NAME): TextSelector(
                 TextSelectorConfig(type=TextSelectorType.TEXT)
             ),
+            vol.Optional(
+                CONF_DETAILED_RESULTS, default=DEFAULT_DETAILED_RESULTS
+            ): BooleanSelector(),
             vol.Optional(
                 CONF_INCLUDE_NON_OWNED_ORGS, default=DEFAULT_INCLUDE_NON_OWNED_ORGS
             ): BooleanSelector(),
@@ -305,6 +313,9 @@ class DevCloudOptionsFlow(OptionsFlow):
         current_include_orgs = self.config_entry.options.get(
             CONF_INCLUDE_NON_OWNED_ORGS, DEFAULT_INCLUDE_NON_OWNED_ORGS
         )
+        current_detailed = self.config_entry.options.get(
+            CONF_DETAILED_RESULTS, DEFAULT_DETAILED_RESULTS
+        )
 
         schema = vol.Schema(
             {
@@ -318,6 +329,7 @@ class DevCloudOptionsFlow(OptionsFlow):
                     )
                 ),
                 vol.Required(CONF_ENABLE_EVENTS, default=current_events): BooleanSelector(),
+                vol.Required(CONF_DETAILED_RESULTS, default=current_detailed): BooleanSelector(),
                 vol.Required(
                     CONF_INCLUDE_NON_OWNED_ORGS, default=current_include_orgs
                 ): BooleanSelector(),

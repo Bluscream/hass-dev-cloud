@@ -101,6 +101,7 @@ class BaseDevCloudProvider(ABC):
         account_name: str,
         base_url: str | None = None,
         api_token: str | None = None,
+        detailed: bool = True,
     ) -> None:
         self.session = session
         self.account_name = account_name.strip()
@@ -108,6 +109,9 @@ class BaseDevCloudProvider(ABC):
         # joining and query helpers rather than string formatting.
         self.base_url = URL(base_url or self.default_base_url)
         self.api_token = api_token.strip() if api_token else None
+        # False asks the provider for summary totals instead of enumerating every item.
+        # Which endpoints that spares is provider-specific, so each one decides.
+        self.detailed = detailed
         # In-memory conditional request caching & TTL caching
         self._etags: dict[str, str] = {}
         self._cached_responses: dict[str, Any] = {}
