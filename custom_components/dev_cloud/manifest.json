@@ -1,12 +1,16 @@
 {
   "domain": "dev_cloud",
   "name": "Developer Cloud Services",
-  "codeowners": ["@Bluscream"],
+  "codeowners": [
+    "@Bluscream"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/Bluscream/hass-dev-cloud",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Bluscream/hass-dev-cloud/issues",
-  "requirements": ["aiogithubapi>=22.10.1"],
-  "version": "1.0.0"
+  "requirements": [
+    "aiogithubapi>=22.10.1"
+  ],
+  "version": "1.0.1"
 }
