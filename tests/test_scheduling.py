@@ -105,3 +105,13 @@ def test_page_walker_treats_a_short_page_as_the_last() -> None:
 
 def test_page_walker_rejects_an_empty_page() -> None:
     assert not PageWalker("/repos", 100).accept([])
+
+
+def test_measured_cost_tracks_the_latest_measurement() -> None:
+    """A high-water mark never recovers: one expensive poll would inflate the interval for
+    the lifetime of the provider."""
+    sched = _scheduler()
+    sched.record_fetch("repos", cost=200)
+    sched.record_fetch("repos", cost=6)
+
+    assert sched.diagnostics()["repos"]["cost"] == 6

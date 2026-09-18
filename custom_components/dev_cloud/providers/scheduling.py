@@ -123,12 +123,15 @@ class ResourceScheduler:
         return (time.time() - self._state(key).last_fetched) >= interval
 
     def record_fetch(self, key: str, cost: int) -> None:
-        """Note that `key` was just refreshed, and what it actually cost in requests."""
+        """Note that `key` was just refreshed, and what it actually cost in requests.
+
+        The most recent measurement wins rather than the highest seen. A high-water mark
+        never recovers, so one abnormally expensive poll would inflate the interval for the
+        lifetime of the provider even after the cause passed.
+        """
         state = self._state(key)
         state.last_fetched = time.time()
-        # Smooth over spikes but converge quickly; costs grow as an account grows.
-        previous = state.measured_cost
-        state.measured_cost = cost if previous is None else max(cost, previous)
+        state.measured_cost = cost
 
     def diagnostics(self) -> dict[str, Any]:
         """Per-resource scheduling state, surfaced on the profile sensor for debugging."""

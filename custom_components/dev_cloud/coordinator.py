@@ -79,6 +79,25 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
             update_interval=timedelta(seconds=scan_interval),
         )
 
+    def _dispatch_additions(
+        self, event: str, field: str, previous: set[str], current: set[str]
+    ) -> None:
+        """Fire one event per newly seen item.
+
+        A previously empty set means no baseline has been established yet — the first poll,
+        or one where the fetch failed and fell back to an empty default. Treating that as
+        "everything is new" would fire an event per repository, which downstream
+        notification automations turn into a push per repository.
+        """
+        if not previous:
+            return
+
+        for name in current - previous:
+            self.hass.bus.async_fire(
+                event,
+                {"platform": self.platform_id, "account": self.account_name, field: name},
+            )
+
     async def _async_update_data(self) -> DevCloudData:
         """Fetch updated data from the provider."""
         try:
@@ -88,34 +107,19 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         except Exception as err:
             raise UpdateFailed(f"Unexpected error fetching {self.platform_id} data: {err}") from err
 
-        # Event dispatching for new repositories / packages
-        if self.enable_events and self.data is not None:
-            current_repos = {r.full_name or r.name for r in data.repos}
-            new_repos = current_repos - self._previous_repos
-            for repo_name in new_repos:
-                self.hass.bus.async_fire(
-                    EVENT_NEW_REPO,
-                    {
-                        "platform": self.platform_id,
-                        "account": self.account_name,
-                        "repository": repo_name,
-                    },
-                )
+        current_repos = {r.full_name or r.name for r in data.repos}
+        current_pkgs = {p.name for p in data.packages}
 
-            current_pkgs = {p.name for p in data.packages}
-            new_pkgs = current_pkgs - self._previous_packages
-            for pkg_name in new_pkgs:
-                self.hass.bus.async_fire(
-                    EVENT_NEW_PACKAGE,
-                    {
-                        "platform": self.platform_id,
-                        "account": self.account_name,
-                        "package": pkg_name,
-                    },
-                )
+        if self.enable_events:
+            self._dispatch_additions(
+                EVENT_NEW_REPO, "repository", self._previous_repos, current_repos
+            )
+            self._dispatch_additions(
+                EVENT_NEW_PACKAGE, "package", self._previous_packages, current_pkgs
+            )
 
-        self._previous_repos = {r.full_name or r.name for r in data.repos}
-        self._previous_packages = {p.name for p in data.packages}
+        self._previous_repos = current_repos
+        self._previous_packages = current_pkgs
 
         # Export the complete snapshot to /config/www so sensors only need to carry counts.
         await async_dump_dev_cloud_json(self.hass, self.platform_id, self.account_name, data)
