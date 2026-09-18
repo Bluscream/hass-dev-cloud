@@ -13,6 +13,7 @@ than reporting a misleading zero.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -63,68 +64,20 @@ async def async_setup_entry(
     entry: DevCloudConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up DevCloud sensor platform."""
+    """Set up DevCloud sensor platform.
+
+    The profile sensor always exists; every other sensor is registered only when the
+    provider actually returned something behind it, per _OPTIONAL_SENSORS below.
+    """
     coordinator = entry.runtime_data
     entities: list[SensorEntity] = [DevCloudProfileSensor(coordinator)]
 
-    data = coordinator.data
-    if data is None:
-        async_add_entities(entities)
-        return
-
-    repos = data.repos
-    packages = data.packages
-
-    if repos:
-        entities.append(DevCloudRepositoriesSensor(coordinator))
-
-    if data.orgs:
-        entities.append(DevCloudOrganizationsSensor(coordinator))
-
-    if data.pastes:
-        entities.append(DevCloudPastesSensor(coordinator))
-
-    if data.notifications:
-        entities.append(DevCloudNotificationsSensor(coordinator))
-
-    if data.open_issues or any(r.open_issues for r in repos):
-        entities.append(DevCloudOpenIssuesSensor(coordinator))
-
-    if data.open_prs:
-        entities.append(DevCloudOpenPullRequestsSensor(coordinator))
-
-    counted = counted_repos(coordinator)
-    if any(r.stars for r in counted) or any(p.star_count for p in packages):
-        entities.append(DevCloudStarsSensor(coordinator))
-
-    if any(r.watchers for r in counted):
-        entities.append(DevCloudWatchersSensor(coordinator))
-
-    if any(r.forks for r in counted):
-        entities.append(DevCloudForksSensor(coordinator))
-
-    if data.releases:
+    if coordinator.data is not None:
         entities.extend(
-            (
-                DevCloudReleasesSensor(coordinator),
-                DevCloudReleaseAssetsSensor(coordinator),
-                DevCloudDownloadsSensor(coordinator),
-            )
+            sensor_cls(coordinator)
+            for sensor_cls, has_data in _OPTIONAL_SENSORS
+            if has_data(coordinator)
         )
-
-    if any(p.pull_count for p in packages) or any(
-        isinstance(r.extra, dict) and r.extra.get("pull_count") for r in repos
-    ):
-        entities.append(DevCloudPullsSensor(coordinator))
-
-    if data.sponsors_count is not None or data.sponsoring_count is not None:
-        entities.append(DevCloudSponsorsSensor(coordinator))
-
-    if packages:
-        entities.append(DevCloudPackagesSensor(coordinator))
-
-    if data.running_jobs_count is not None:
-        entities.append(DevCloudRunningJobsSensor(coordinator))
 
     async_add_entities(entities)
 
@@ -621,3 +574,46 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
             "platform": self.coordinator.platform_id,
             "account": self.coordinator.account_name,
         }
+
+
+def _has_pulls(coordinator: DevCloudCoordinator) -> bool:
+    """Docker Hub reports pulls on packages; other registries stash it on the repo extra."""
+    data = coordinator.data
+    return any(p.pull_count for p in data.packages) or any(
+        isinstance(r.extra, dict) and r.extra.get("pull_count") for r in data.repos
+    )
+
+
+#: Sensor classes paired with the test for whether this account has data behind them.
+#: Evaluated once at platform setup, so a sensor that gains data later appears on reload.
+_OPTIONAL_SENSORS: tuple[
+    tuple[type[DevCloudBaseEntity], Callable[[DevCloudCoordinator], bool]], ...
+] = (
+    (DevCloudRepositoriesSensor, lambda c: bool(c.data.repos)),
+    (DevCloudOrganizationsSensor, lambda c: bool(c.data.orgs)),
+    (DevCloudPastesSensor, lambda c: bool(c.data.pastes)),
+    (DevCloudNotificationsSensor, lambda c: bool(c.data.notifications)),
+    (
+        DevCloudOpenIssuesSensor,
+        lambda c: bool(c.data.open_issues) or any(r.open_issues for r in c.data.repos),
+    ),
+    (DevCloudOpenPullRequestsSensor, lambda c: bool(c.data.open_prs)),
+    (
+        DevCloudStarsSensor,
+        lambda c: (
+            any(r.stars for r in counted_repos(c)) or any(p.star_count for p in c.data.packages)
+        ),
+    ),
+    (DevCloudWatchersSensor, lambda c: any(r.watchers for r in counted_repos(c))),
+    (DevCloudForksSensor, lambda c: any(r.forks for r in counted_repos(c))),
+    (DevCloudReleasesSensor, lambda c: bool(counted_releases(c))),
+    (DevCloudReleaseAssetsSensor, lambda c: bool(counted_releases(c))),
+    (DevCloudDownloadsSensor, lambda c: bool(counted_releases(c))),
+    (DevCloudPullsSensor, _has_pulls),
+    (
+        DevCloudSponsorsSensor,
+        lambda c: c.data.sponsors_count is not None or c.data.sponsoring_count is not None,
+    ),
+    (DevCloudPackagesSensor, lambda c: bool(c.data.packages)),
+    (DevCloudRunningJobsSensor, lambda c: c.data.running_jobs_count is not None),
+)

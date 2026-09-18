@@ -151,6 +151,55 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="gitea_instance", data_schema=schema)
 
+    def _resolve_instance_url(
+        self, user_input: dict[str, Any], platform: str, is_custom_gitea: bool
+    ) -> tuple[str, dict[str, str]]:
+        """Work out the base URL for the entry, and any error it produced."""
+        if platform == PLATFORM_GITEA:
+            if not is_custom_gitea:
+                return (self._selected_instance_url or "").rstrip("/"), {}
+            instance_url = (user_input.get(CONF_INSTANCE_URL) or "").strip()
+            if not instance_url:
+                return "", {CONF_INSTANCE_URL: "invalid_url"}
+        else:
+            instance_url = user_input.get(CONF_INSTANCE_URL) or DEFAULT_URLS.get(platform, "")
+        return instance_url.rstrip("/"), {}
+
+    async def _async_validate_account(
+        self, platform: str, account: str, instance_url: str, api_token: str | None
+    ) -> str | None:
+        """Validate credentials, returning an error key or None when the account is good."""
+        provider = get_provider(
+            platform=platform,
+            session=async_get_clientsession(self.hass),
+            account_name=account,
+            instance_url=instance_url,
+            api_token=api_token,
+        )
+
+        try:
+            return None if await provider.async_validate() else "user_not_found"
+        except DevCloudAuthError:
+            return "invalid_auth"
+        except DevCloudNotFoundError:
+            return "user_not_found"
+        except DevCloudRateLimitError:
+            return "rate_limited"
+        except DevCloudProviderError:
+            return "cannot_connect"
+        except Exception:
+            _LOGGER.exception("Unexpected error validating %s account %s", platform, account)
+            return "unknown"
+
+    @staticmethod
+    def _entry_title(platform: str, account: str, instance_url: str) -> str:
+        """Title for the entry. Gitea entries carry the host, since there can be several."""
+        if platform == PLATFORM_GITEA and instance_url:
+            netloc = urllib.parse.urlparse(instance_url).netloc.split(":")[0]
+            domain_slug = netloc.replace(".", "_").replace("-", "_").strip("_").lower()
+            return f"{domain_slug} {account}"
+        return f"{SUPPORTED_PLATFORMS.get(platform, platform)} ({account})"
+
     async def async_step_account(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -163,67 +212,23 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             account = user_input[CONF_ACCOUNT_NAME].strip()
+            instance_url, errors = self._resolve_instance_url(user_input, platform, is_custom_gitea)
+            api_token = (user_input.get(CONF_API_TOKEN) or "").strip() or None
 
-            # Determine instance URL
-            if is_gitea:
-                if is_custom_gitea:
-                    instance_url = (user_input.get(CONF_INSTANCE_URL) or "").strip()
-                    if not instance_url:
-                        errors[CONF_INSTANCE_URL] = "invalid_url"
-                else:
-                    instance_url = self._selected_instance_url or ""
-            else:
-                instance_url = user_input.get(CONF_INSTANCE_URL) or DEFAULT_URLS.get(platform, "")
-
-            instance_url = instance_url.rstrip("/")
-
-            api_token = user_input.get(CONF_API_TOKEN)
-            if api_token:
-                api_token = api_token.strip()
+            if not account:
+                errors[CONF_ACCOUNT_NAME] = "user_not_found"
 
             if not errors:
-                # Generate unique ID: platform_host_account
                 host = urllib.parse.urlparse(instance_url).netloc or "cloud"
-                unique_id = f"{platform}_{host}_{account}".lower()
-
-                await self.async_set_unique_id(unique_id)
+                await self.async_set_unique_id(f"{platform}_{host}_{account}".lower())
                 self._abort_if_unique_id_configured()
 
-                session = async_get_clientsession(self.hass)
-                provider = get_provider(
-                    platform=platform,
-                    session=session,
-                    account_name=account,
-                    instance_url=instance_url,
-                    api_token=api_token,
+                error = await self._async_validate_account(
+                    platform, account, instance_url, api_token
                 )
-
-                try:
-                    valid = await provider.async_validate()
-                    if not valid:
-                        errors["base"] = "user_not_found"
-                except DevCloudAuthError:
-                    errors["base"] = "invalid_auth"
-                except DevCloudNotFoundError:
-                    errors["base"] = "user_not_found"
-                except DevCloudRateLimitError:
-                    errors["base"] = "rate_limited"
-                except DevCloudProviderError:
-                    errors["base"] = "cannot_connect"
-                except Exception as err:
-                    _LOGGER.exception(
-                        "Unexpected error validating %s account %s: %s", platform, account, err
-                    )
-                    errors["base"] = "unknown"
-
-                if not errors:
-                    if platform == PLATFORM_GITEA and instance_url:
-                        netloc = urllib.parse.urlparse(instance_url).netloc.split(":")[0]
-                        domain_slug = netloc.replace(".", "_").replace("-", "_").strip("_").lower()
-                        title = f"{domain_slug} {account}"
-                    else:
-                        title = f"{SUPPORTED_PLATFORMS.get(platform, platform)} ({account})"
-
+                if error:
+                    errors["base"] = error
+                else:
                     data = {
                         CONF_PLATFORM: platform,
                         CONF_ACCOUNT_NAME: account,
@@ -238,7 +243,11 @@ class DevCloudConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_INCLUDE_NON_OWNED_ORGS, DEFAULT_INCLUDE_NON_OWNED_ORGS
                         )
                     }
-                    return self.async_create_entry(title=title, data=data, options=options)
+                    return self.async_create_entry(
+                        title=self._entry_title(platform, account, instance_url),
+                        data=data,
+                        options=options,
+                    )
 
         fields: dict[Any, Any] = {
             vol.Required(CONF_ACCOUNT_NAME): TextSelector(
