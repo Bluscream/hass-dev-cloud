@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -27,9 +28,8 @@ from .const import (
     DEFAULT_SCAN_INTERVAL_ANONYMOUS,
     DEFAULT_SCAN_INTERVAL_AUTHENTICATED,
     DOMAIN,
-    EVENT_NEW_PACKAGE,
-    EVENT_NEW_REPO,
 )
+from .events import AccountState, changes, snapshot
 from .models import DevCloudData
 from .providers import DevCloudProviderError, get_provider
 from .storage import async_dump_dev_cloud_json, async_load_dev_cloud_json, build_json_url
@@ -88,8 +88,8 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         # repository on each property access.
         self.totals: Totals | None = None
 
-        self._previous_repos: set[str] = set()
-        self._previous_packages: set[str] = set()
+        # Reduced form of the previous poll, kept purely to diff against.
+        self._previous: AccountState | None = None
 
         super().__init__(
             hass,
@@ -98,23 +98,12 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
             update_interval=timedelta(seconds=scan_interval),
         )
 
-    def _dispatch_additions(
-        self, event: str, field: str, previous: set[str], current: set[str]
-    ) -> None:
-        """Fire one event per newly seen item.
-
-        A previously empty set means no baseline has been established yet — the first poll,
-        or one where the fetch failed and fell back to an empty default. Treating that as
-        "everything is new" would fire an event per repository, which downstream
-        notification automations turn into a push per repository.
-        """
-        if not previous:
-            return
-
-        for name in current - previous:
+    def _fire(self, events: list[tuple[str, dict[str, Any]]]) -> None:
+        """Put each detected change on the bus, tagged with the account it belongs to."""
+        for event, payload in events:
             self.hass.bus.async_fire(
                 event,
-                {"platform": self.platform_id, "account": self.account_name, field: name},
+                {"platform": self.platform_id, "account": self.account_name, **payload},
             )
 
     async def _async_restore(self) -> None:
@@ -147,19 +136,10 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         except Exception as err:
             raise UpdateFailed(f"Unexpected error fetching {self.platform_id} data: {err}") from err
 
-        current_repos = {r.full_name or r.name for r in data.repos}
-        current_pkgs = {p.name for p in data.packages}
-
+        current = snapshot(data)
         if self.enable_events:
-            self._dispatch_additions(
-                EVENT_NEW_REPO, "repository", self._previous_repos, current_repos
-            )
-            self._dispatch_additions(
-                EVENT_NEW_PACKAGE, "package", self._previous_packages, current_pkgs
-            )
-
-        self._previous_repos = current_repos
-        self._previous_packages = current_pkgs
+            self._fire(changes(self._previous, current))
+        self._previous = current
 
         # Set before returning, so a sensor read triggered by the update already sees
         # totals matching the data it is reading.

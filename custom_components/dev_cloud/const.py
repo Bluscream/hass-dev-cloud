@@ -38,7 +38,14 @@ RUNNING_JOBS_CONCURRENCY: Final = 5
 # Event names
 EVENT_DEV_CLOUD: Final = "dev_cloud_event"
 EVENT_NEW_REPO: Final = "dev_cloud_new_repo"
+EVENT_REPO_REMOVED: Final = "dev_cloud_repo_removed"
+EVENT_NEW_RELEASE: Final = "dev_cloud_new_release"
+EVENT_STARS_CHANGED: Final = "dev_cloud_stars_changed"
 EVENT_NEW_PACKAGE: Final = "dev_cloud_new_package"
+EVENT_PACKAGE_REMOVED: Final = "dev_cloud_package_removed"
+EVENT_NEW_ORG: Final = "dev_cloud_new_org"
+EVENT_ORG_REMOVED: Final = "dev_cloud_org_removed"
+EVENT_NEW_NOTIFICATION: Final = "dev_cloud_new_notification"
 
 # Platforms
 PLATFORM_GITHUB: Final = "github"

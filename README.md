@@ -307,15 +307,54 @@ exhausted a GraphQL budget during development.
 
 ## Events
 
-Fired when **Enable events** is on:
+Fired on the Home Assistant bus when **Enable events** is on. Every payload carries
+`platform` and `account` alongside the fields below.
 
-- `dev_cloud_new_repo` — a repository appeared
-- `dev_cloud_new_package` — a package appeared
+| Event | Fired when | Payload |
+| :--- | :--- | :--- |
+| `dev_cloud_new_repo` | a repository appears | `repository`, `url` |
+| `dev_cloud_repo_removed` | a repository is deleted or transferred | `repository` |
+| `dev_cloud_new_release` | a release is published | `repository`, `tag`, `url` |
+| `dev_cloud_stars_changed` | a repository gains or loses stars | `repository`, `url`, `stars`, `previous_stars`, `delta` |
+| `dev_cloud_new_package` | a package appears | `package` |
+| `dev_cloud_package_removed` | a package disappears | `package` |
+| `dev_cloud_new_org` | an organisation membership appears | `organization` |
+| `dev_cloud_org_removed` | an organisation membership ends | `organization` |
+| `dev_cloud_new_notification` | an unread notification arrives | `id`, `title`, `repository`, `url`, `reason`, `subject_type` |
 
-No events fire until a baseline exists, so the first successful poll does not announce every
-existing repository at once.
+`delta` is negative when stars are lost, so one trigger covers both directions.
 
----
+### What is deliberately not fired
+
+**Nothing on the first poll.** Without a baseline every existing repository, package and
+organisation would be announced at once.
+
+**Nothing from a collection that was not fetched.** A resource that is skipped, unavailable
+or failed keeps its previous value, and is not compared at all — so a failed request can
+never look like a mass deletion.
+
+**Nothing when a collection empties entirely.** Everything vanishing in one poll is far more
+likely to be a bad response than a real deletion of all of it, so removals are suppressed in
+that case and logged instead.
+
+### Example automation
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: dev_cloud_new_notification
+actions:
+  - action: notify.mobile_app_phone
+    data:
+      title: "🔔 {{ trigger.event.data.repository or trigger.event.data.platform }}"
+      message: "{{ trigger.event.data.title }}"
+      data:
+        url: "{{ trigger.event.data.url }}"
+```
+
+Events are the right trigger for anything you want pushed. A sensor tells you how many
+notifications exist; the event tells you one just arrived, and what it was — which a state
+trigger cannot, since the sensor's attributes carry only counts.
 
 ## Development
 
