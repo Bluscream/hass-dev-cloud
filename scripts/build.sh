@@ -18,6 +18,7 @@ ensure_venv() {
   fi
 }
 
+# Full gate: format, lint, types, tests. Every step must pass before a deploy.
 run_lint() {
   echo "--> Running linters and type/syntax checks..."
   if [ -x "$VENV_DIR/bin/ruff" ]; then
@@ -29,6 +30,24 @@ run_lint() {
   fi
   python3 -m py_compile "$SRC_DIR"/*.py "$SRC_DIR"/providers/*.py
   echo "Lint and compile passed!"
+
+  if [ -x "$VENV_DIR/bin/mypy" ]; then
+    echo "--> Type checking (mypy --strict)..."
+    "$VENV_DIR/bin/mypy" "$SRC_DIR"
+  else
+    echo "Warning: mypy not installed in $VENV_DIR, skipping type check"
+  fi
+
+  run_tests
+}
+
+run_tests() {
+  if [ -x "$VENV_DIR/bin/pytest" ]; then
+    echo "--> Running tests..."
+    "$VENV_DIR/bin/pytest" "$ROOT_DIR/tests" -q
+  else
+    echo "Warning: pytest not installed in $VENV_DIR, skipping tests"
+  fi
 }
 
 run_format() {
@@ -98,6 +117,9 @@ case "$ACTION" in
   lint)
     run_lint
     ;;
+  test|tests)
+    run_tests
+    ;;
   fmt|format)
     run_format
     ;;
@@ -115,7 +137,7 @@ case "$ACTION" in
     echo "=== Completed successfully ==="
     ;;
   *)
-    echo "Usage: $0 {lint|format|deploy|reload|all} [config_entry_id]"
+    echo "Usage: $0 {lint|test|format|deploy|reload|all} [config_entry_id]"
     exit 1
     ;;
 esac
