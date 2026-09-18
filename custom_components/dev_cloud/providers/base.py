@@ -36,6 +36,7 @@ class BaseDevCloudProvider(ABC):
     default_base_url: str = ""
     supports_custom_url: bool = False
     requires_auth: bool = False
+    supports_sponsors: bool = False
 
     def __init__(
         self,

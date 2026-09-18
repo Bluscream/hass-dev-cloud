@@ -30,6 +30,7 @@ class GitHubProvider(BaseDevCloudProvider):
     platform_id = PLATFORM_GITHUB
     default_base_url = "https://api.github.com"
     supports_custom_url = False
+    supports_sponsors = True
 
     def __init__(
         self,

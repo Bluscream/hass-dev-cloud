@@ -13,7 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from . import DevCloudConfigEntry
-from .const import PLATFORM_ICONS
+from .const import PLATFORM_DOCKERHUB, PLATFORM_ICONS
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
 
@@ -46,13 +46,27 @@ async def async_setup_entry(
     if coordinator.platform_id in FORGE_PLATFORMS:
         entities.append(DevCloudNotificationsSensor(coordinator))
 
-    # Add Open Issues, PRs, Stars, Watchers, Forks, and Sponsors sensors for forge platforms
+    # Add Open Issues, PRs, Stars, Watchers, Forks sensors for forge platforms
     if coordinator.platform_id in FORGE_PLATFORMS:
         entities.append(DevCloudOpenIssuesSensor(coordinator))
         entities.append(DevCloudOpenPullRequestsSensor(coordinator))
         entities.append(DevCloudStarsSensor(coordinator))
         entities.append(DevCloudWatchersSensor(coordinator))
         entities.append(DevCloudForksSensor(coordinator))
+    elif coordinator.platform_id == PLATFORM_DOCKERHUB:
+        # Docker Hub provides total stars and total pulls across repositories/images
+        entities.append(DevCloudStarsSensor(coordinator))
+        entities.append(DevCloudPullsSensor(coordinator))
+
+    # Add Sponsors sensor only if platform supports sponsors or has sponsors data
+    has_sponsors_data = bool(
+        coordinator.data
+        and (
+            coordinator.data.sponsors_count is not None
+            or coordinator.data.sponsoring_count is not None
+        )
+    )
+    if getattr(coordinator.provider, "supports_sponsors", False) or has_sponsors_data:
         entities.append(DevCloudSponsorsSensor(coordinator))
 
     # Add Packages sensor if platform has packages
@@ -221,7 +235,12 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
 
     def __init__(self, coordinator: DevCloudCoordinator) -> None:
         super().__init__(coordinator, "pastes")
-        self._attr_name = "Pastes and Gists"
+        if coordinator.platform_id == "github":
+            self._attr_name = "Gists"
+        elif coordinator.platform_id == "gitlab":
+            self._attr_name = "Snippets"
+        else:
+            self._attr_name = "Pastes"
 
     @property
     def native_value(self) -> StateType:
@@ -465,6 +484,32 @@ class DevCloudForksSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return None
         return sum(r.forks for r in self.coordinator.data.repos)
+
+
+class DevCloudPullsSensor(DevCloudBaseEntity, SensorEntity):
+    """Sensor for total pull/download count across all repositories or packages."""
+
+    _attr_icon = "mdi:download"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "pulls"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "pulls")
+        self._attr_name = "Pulls"
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        # Sum from packages or repository extras
+        packages_pulls = sum(p.pull_count or 0 for p in self.coordinator.data.packages)
+        repos_pulls = sum(
+            r.extra.get("pull_count", 0)
+            for r in self.coordinator.data.repos
+            if isinstance(r.extra, dict)
+        )
+        return max(packages_pulls, repos_pulls)
 
 
 class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):

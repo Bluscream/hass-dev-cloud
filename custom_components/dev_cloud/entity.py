@@ -42,6 +42,8 @@ class DevCloudBaseEntity(CoordinatorEntity[DevCloudCoordinator]):
             platform_name = SUPPORTED_PLATFORMS.get(platform_id, platform_id.title())
             device_name = f"{platform_name} ({account_name})"
             manufacturer = platform_name
+            prefix = f"cloud_{platform_id.lower()}_{account_name.lower()}"
+            self._attr_suggested_object_id = f"{prefix}_{entity_key}"
 
         self._attr_unique_id = f"{entry.entry_id}_{entity_key}"
         self._attr_device_info = DeviceInfo(
