@@ -251,6 +251,10 @@ async def _releases_for(
                     graphql, name_with_owner, "refs/heads/", repo.get("branches") or {}
                 ),
                 "tags": await _refs(graphql, name_with_owner, "refs/tags/", repo.get("tags") or {}),
+                "watchers": (repo.get("watchers") or {}).get("totalCount"),
+                "security_alerts": await _alerts(
+                    graphql, name_with_owner, repo.get("vulnerabilityAlerts") or {}
+                ),
             }
 
         repo_page = repos_conn.get("pageInfo") or {}
