@@ -337,8 +337,8 @@ anything up.
 | `dev_cloud_new_package` / `_package_removed` | `name`, `package` |
 | `dev_cloud_package_changed` | `name`, `old`, `new`, `changed` |
 | `dev_cloud_new_org` / `_org_removed` | `name`, `organization` |
-| `dev_cloud_new_downloads` | `delta`, `total`, `previous_total`, `assets`, `repositories`, `top_repository`, `top_repository_delta`, `breakdown` |
-| `dev_cloud_new_pulls` | `delta`, `total`, `previous_total`, `packages`, `top_package`, `top_package_delta`, `breakdown` |
+| `dev_cloud_new_downloads` | `repository`, `delta`, `total`, `previous_total`, `assets`, `breakdown` |
+| `dev_cloud_new_pulls` | `name`, `package`, `delta`, `pulls`, `previous_pulls` |
 | `dev_cloud_new_security_alert` | `repository`, `alert`, `severity`, `package`, `ecosystem`, `ghsa`, `cve`, `cvss`, `summary`, `url` |
 | `dev_cloud_security_alerts_resolved` | `repository`, `resolved`, `remaining`, `alerts` |
 | `dev_cloud_new_notification` | `title`, `repository`, `url`, `reason`, `subject_type`, `notification` |
@@ -372,14 +372,17 @@ something to act on, so each gets its own event with the package, GHSA id, CVE a
 score attached. Resolutions come in bulk — one dependency bump can clear dozens, and one
 repository here has 68 open — so they are summarised per repository.
 
-**Counters are batched, not itemised.** Download and pull counts tick upward constantly, and
-this account holds 3,581 release assets — an event per asset would be unusable. Instead one
-`dev_cloud_new_downloads` per poll carries the account-wide delta plus a breakdown of the
-busiest repositories, and one `dev_cloud_new_pulls` does the same for images. Only increases
-are reported; a falling count means something was deleted, which `release_changed` covers.
+**Counters are batched per repository, not per asset.** Download counts tick upward
+constantly and this account holds 3,581 release assets, so an event per asset would be
+unusable — but an account-wide total is too coarse to act on. The middle ground is one
+`dev_cloud_new_downloads` per *repository* whose assets moved, carrying that repository's
+`delta`, its running `total`, and a `breakdown` naming each asset and tag that contributed.
+`dev_cloud_new_pulls` works the same way, one event per image. Only increases are reported;
+a falling count means something was deleted, which `release_changed` covers.
 
-Organisation repositories count towards the download batch, since they are in the snapshot
-either way.
+Organisation repositories emit their own events — a star, an advisory or a download on one
+of them is the same occurrence as on any other repository. Whether they count towards the
+*totals* sensors is a separate question, decided by the organisation option.
 
 ### Example automation
 
@@ -403,7 +406,7 @@ actions:
         {% elif trigger.event.event_type == 'dev_cloud_new_release' %}
           🚀 {{ d.repository }} {{ d.tag }}
         {% elif trigger.event.event_type == 'dev_cloud_new_downloads' %}
-          📥 {{ "{:,}".format(d.delta) }} new downloads
+          📥 {{ "{:,}".format(d.delta) }} new downloads in {{ d.repository }}
         {% else %}
           🔔 {{ d.repository or d.platform }}
         {% endif %}
