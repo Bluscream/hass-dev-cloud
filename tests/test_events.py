@@ -235,22 +235,38 @@ def _repo_with_downloads(full_name: str, tag: str, downloads: int) -> RepoData:
     return repo
 
 
-def test_downloads_are_reported_as_one_batched_event() -> None:
-    """Per-asset events would be unusable — this account has 3,581 release assets."""
-    before = _snap(repos=[_repo_with_downloads("o/a", "v1", 100), _repo_with_downloads("o/b", "v1", 50)])
-    after = _snap(repos=[_repo_with_downloads("o/a", "v1", 1100), _repo_with_downloads("o/b", "v1", 75)])
+def test_downloads_are_reported_once_per_repository() -> None:
+    """Per asset would be unusable — 3,581 of them here — but per repository is exactly one
+    notification per thing that moved."""
+    before = _snap(
+        repos=[_repo_with_downloads("o/a", "v1", 100), _repo_with_downloads("o/b", "v1", 50)]
+    )
+    after = _snap(
+        repos=[_repo_with_downloads("o/a", "v1", 1100), _repo_with_downloads("o/b", "v1", 75)]
+    )
 
-    result = events.changes(before, after)
-    assert _types(result).count(EVENT_NEW_DOWNLOADS) == 1
+    result = [(e, p) for e, p in events.changes(before, after) if e == EVENT_NEW_DOWNLOADS]
+    assert len(result) == 2, "one event per repository that gained downloads"
 
-    payload = _first(result, EVENT_NEW_DOWNLOADS)
-    assert payload["delta"] == 1025
-    assert payload["total"] == 1175
-    assert payload["assets"] == 2
-    assert payload["repositories"] == 2
-    assert payload["top_repository"] == "o/a"
-    assert payload["top_repository_delta"] == 1000
-    assert payload["breakdown"][0] == {"repository": "o/a", "delta": 1000}
+    by_repo = {p["repository"]: p for _, p in result}
+    assert by_repo["o/a"]["delta"] == 1000
+    assert by_repo["o/a"]["total"] == 1100
+    assert by_repo["o/a"]["previous_total"] == 100
+    assert by_repo["o/a"]["assets"] == 1
+    assert by_repo["o/a"]["breakdown"][0] == {"tag": "v1", "asset": "app.zip", "delta": 1000}
+    assert by_repo["o/b"]["delta"] == 25
+
+
+def test_a_repository_whose_downloads_did_not_move_fires_nothing() -> None:
+    before = _snap(
+        repos=[_repo_with_downloads("o/a", "v1", 100), _repo_with_downloads("o/b", "v1", 50)]
+    )
+    after = _snap(
+        repos=[_repo_with_downloads("o/a", "v1", 100), _repo_with_downloads("o/b", "v1", 75)]
+    )
+
+    fired = [p["repository"] for e, p in events.changes(before, after) if e == EVENT_NEW_DOWNLOADS]
+    assert fired == ["o/b"]
 
 
 def test_no_download_event_when_nothing_moved() -> None:
@@ -266,13 +282,19 @@ def test_downloads_only_report_increases() -> None:
     assert EVENT_NEW_DOWNLOADS not in _types(events.changes(before, after))
 
 
-def test_organisation_downloads_count_towards_the_batch() -> None:
-    """They are in the snapshot, so a push about "your downloads" should include them."""
+def test_organisation_repositories_report_their_own_downloads() -> None:
+    """They are in the snapshot, so a push about downloads should cover them too."""
     org_before = OrgData(name="Org", is_owned=True, repos=[_repo_with_downloads("Org/x", "v1", 10)])
     org_after = OrgData(name="Org", is_owned=True, repos=[_repo_with_downloads("Org/x", "v1", 60)])
 
-    result = events.changes(_snap(orgs=[org_before]), _snap(orgs=[org_after]))
-    assert _first(result, EVENT_NEW_DOWNLOADS)["delta"] == 50
+    result = [
+        p
+        for e, p in events.changes(_snap(orgs=[org_before]), _snap(orgs=[org_after]))
+        if e == EVENT_NEW_DOWNLOADS
+    ]
+    assert len(result) == 1
+    assert result[0]["repository"] == "Org/x"
+    assert result[0]["delta"] == 50
 
 
 def _repo_with_alerts(full_name: str, numbers: tuple[int, ...]) -> RepoData:
@@ -324,3 +346,27 @@ def test_resolved_alerts_are_batched_per_repository() -> None:
 
 def test_a_repository_with_no_alerts_either_side_is_silent() -> None:
     assert events.changes(_snap(repos=[_repo("o/a")]), _snap(repos=[_repo("o/a")])) == []
+
+
+def test_organisation_repositories_get_the_same_events_as_your_own() -> None:
+    """A star on an organisation repository is the same event as on any other. Whether it
+    counts towards the totals is a separate question, decided by the organisation option."""
+    before = OrgData(name="Org", is_owned=True, repos=[_repo("Org/x", stars=1)])
+    after = OrgData(name="Org", is_owned=True, repos=[_repo("Org/x", stars=2)])
+
+    payload = _first(events.changes(_snap(orgs=[before]), _snap(orgs=[after])), EVENT_STARS_CHANGED)
+    assert payload["repository"] == "Org/x"
+    assert payload["delta"] == 1
+
+
+def test_a_repository_moving_between_the_account_and_an_org_is_not_a_delete() -> None:
+    """It is indexed by full_name across both, so a transfer that keeps the name is quiet."""
+    repo = _repo("Bluscream/x", stars=3)
+    before = _snap(repos=[repo])
+    after = _snap(orgs=[OrgData(name="Bluscream", is_owned=True, repos=[repo])])
+
+    fired = _types(events.changes(before, after))
+    # Gaining the organisation is a real event; the repository moving inside it is not.
+    assert EVENT_NEW_ORG in fired
+    assert EVENT_NEW_REPO not in fired
+    assert EVENT_REPO_REMOVED not in fired
