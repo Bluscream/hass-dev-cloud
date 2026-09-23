@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from ..const import PLATFORM_GITLAB, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
@@ -44,6 +45,13 @@ class GitLabProvider(BaseDevCloudProvider):
         # Resolved from the username by the profile fetch; every other endpoint is keyed
         # by numeric id, so the profile resource must run before them.
         self._user_id: int | None = None
+
+    def restore(self, snapshot: Mapping[str, Any]) -> None:
+        super().restore(snapshot)
+        profile = self._resource_values.get("profile")
+        if isinstance(profile, ProfileData) and profile.user_id:
+            with contextlib.suppress(ValueError):
+                self._user_id = int(profile.user_id)
 
     def get_headers(self) -> dict[str, str]:
         headers = super().get_headers()
@@ -250,6 +258,14 @@ class GitLabProvider(BaseDevCloudProvider):
         profile: ProfileData = await self.async_resource(
             "profile", self._async_fetch_profile, ProfileData(username=self.account_name)
         )
+        if self._user_id is None and profile.user_id:
+            with contextlib.suppress(ValueError):
+                self._user_id = int(profile.user_id)
+
+        if self._user_id is None:
+            user_id, _ = await self._async_fetch_user_id()
+            self._user_id = user_id
+
         if self._user_id is None:
             raise ValueError(f"GitLab user '{self.account_name}' could not be resolved")
 

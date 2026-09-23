@@ -365,3 +365,27 @@ def test_npm_does_not_fabricate_an_avatar_from_another_service() -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.keyword) and node.arg == "avatar_url":
             raise AssertionError("npm has no avatar of its own to report")
+
+
+def test_gitlab_user_id_restored_from_snapshot() -> None:
+    """When reloading, profile is restored from snapshot. _user_id must be restored
+    so subsequent operations do not fail with 'could not be resolved'."""
+    from unittest.mock import MagicMock
+
+    from dev_cloud.providers.gitlab import GitLabProvider
+
+    provider = GitLabProvider(session=MagicMock(), account_name="Bluscream")
+    assert provider._user_id is None
+
+    # Simulate snapshot restore
+    snapshot = {
+        "profile": {
+            "username": "Bluscream",
+            "user_id": 845211,
+        },
+        "resources": {
+            "profile": {"fetched_at": "2026-09-19T12:00:00+00:00", "cost": 1},
+        },
+    }
+    provider.restore(snapshot)
+    assert provider._user_id == 845211
