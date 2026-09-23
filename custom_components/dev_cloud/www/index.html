@@ -337,13 +337,30 @@ function leaderboard(title, rows, score, columns) {
   );
 }
 
+/**
+ * Naming the organisation only when the repository's own path does not already say it.
+ *
+ * It almost never does not: on GitHub the full name is always owner/repo and the owner is
+ * the organisation, so the suffix was repeating the word immediately to its left on every
+ * row. GitLab nests, so a subgroup's repository reads group/subgroup/repo and the
+ * organisation is the whole prefix - still redundant, just less obviously.
+ *
+ * The suffix survives for the case it was actually for: a repository listed under an
+ * organisation whose name is not its path prefix, which is where the extra word is the only
+ * thing telling you where the row came from.
+ */
 const repoCell = {
   label: "Repository",
-  cell: (r) => el("span", {},
-    r.url ? el("a", { href: r.url, target: "_blank", rel: "noreferrer", className: "name" }, r.full_name || r.name)
-          : el("span", { className: "name" }, r.full_name || r.name || "—"),
-    r._org ? el("span", { className: "dim" }, ` · ${r._org}`) : null,
-  ),
+  cell: (r) => {
+    const path = r.full_name || r.name || "—";
+    const elsewhere = r._org && !String(path).startsWith(`${r._org}/`);
+    return el("span", {},
+      r.url
+        ? el("a", { href: r.url, target: "_blank", rel: "noreferrer", className: "name" }, path)
+        : el("span", { className: "name" }, path),
+      elsewhere ? el("span", { className: "dim" }, ` · ${r._org}`) : null,
+    );
+  },
 };
 const valueCell = (label) => ({ label, numeric: true, cell: (_r, v) => fmt(v) });
 
