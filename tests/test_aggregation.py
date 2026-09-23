@@ -392,3 +392,44 @@ def test_top_referrers_respect_the_attribute_limit() -> None:
     data = DevCloudData(profile=ProfileData(username="x"), repos=[repo], collected={"traffic"})
 
     assert len(aggregation.top_referrers(_FakeCoordinator(data, include_non_owned_orgs=False), 10)) == 10
+
+
+def test_watchers_are_unknown_rather_than_zero_when_nothing_was_measured() -> None:
+    """A state of 0 is recorded into long-term statistics as fact, and those buckets
+    outlive the detailed history - a false zero there cannot be corrected later."""
+    data = DevCloudData(
+        profile=ProfileData(username="x"),
+        repos=[_repo("x/a"), _repo("x/b")],
+        collected={"repos"},
+    )
+    assert all(r.watchers is None for r in data.repos), "the model default is unmeasured"
+
+    totals = aggregation.compute_totals(_FakeCoordinator(data, include_non_owned_orgs=False))
+    assert totals.watchers is None
+
+
+def test_a_measured_zero_still_counts_as_a_measurement() -> None:
+    data = DevCloudData(
+        profile=ProfileData(username="x"),
+        repos=[_repo("x/a"), _repo("x/b")],
+        collected={"repos"},
+    )
+    data.repos[0].watchers = 0
+    data.repos[1].watchers = 4
+
+    totals = aggregation.compute_totals(_FakeCoordinator(data, include_non_owned_orgs=False))
+    assert totals.watchers == 4
+
+
+def test_partly_measured_watchers_sum_only_what_was_measured() -> None:
+    """Under-reporting is the lesser evil: the alternative invents zeros for repositories
+    the walk has not reached, which is indistinguishable from them having none."""
+    data = DevCloudData(
+        profile=ProfileData(username="x"),
+        repos=[_repo("x/a"), _repo("x/b")],
+        collected={"repos"},
+    )
+    data.repos[0].watchers = 7
+
+    totals = aggregation.compute_totals(_FakeCoordinator(data, include_non_owned_orgs=False))
+    assert totals.watchers == 7

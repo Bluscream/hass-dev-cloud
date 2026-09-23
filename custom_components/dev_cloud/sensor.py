@@ -609,9 +609,15 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
 
     @property
     def native_value(self) -> StateType:
+        """None rather than 0 while the count is genuinely unknown.
+
+        Same reasoning as Sponsors: a restored snapshot can say the resource was collected
+        without carrying the figure, and "no jobs running" is a claim this has no business
+        making until something has actually looked.
+        """
         if not self.coordinator.data:
             return None
-        return self.coordinator.data.running_jobs_count or 0
+        return self.coordinator.data.running_jobs_count
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

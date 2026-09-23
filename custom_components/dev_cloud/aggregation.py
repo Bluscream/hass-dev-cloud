@@ -8,6 +8,7 @@ the rule is stated once.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -103,7 +104,10 @@ class Totals:
     private_repositories: int
     stars: int
     forks: int
-    watchers: int
+    # None when no counted repository carries a watcher measurement at all. Summing
+    # unmeasured repositories as zero would write a confident 0 into the long-term
+    # statistics, which outlive the detailed history and cannot be corrected later.
+    watchers: int | None
     releases: int
     assets: int
     downloads: int
@@ -140,7 +144,7 @@ def compute_totals(coordinator: DevCloudCoordinator) -> Totals:
         private_repositories=sum(1 for r in repos if r.is_private),
         stars=sum(r.stars for r in counted) + sum(p.star_count or 0 for p in data.packages),
         forks=sum(r.forks for r in counted),
-        watchers=sum(r.watchers or 0 for r in counted),
+        watchers=_measured_sum(repo.watchers for repo in counted),
         releases=len(releases),
         assets=len(all_assets),
         downloads=sum(int(a.get("downloads", 0) or 0) for a in all_assets),
@@ -174,6 +178,16 @@ class TrafficTotals:
     repositories: int = 0
     #: Distinct days on record, counted per repository, so a figure that only ever grows.
     days: int = 0
+
+
+def _measured_sum(values: Iterable[int | None]) -> int | None:
+    """Sum the measurements, or None when there were none to sum.
+
+    An absent value is not a zero, and the distinction has to survive all the way to the
+    sensor: a state of 0 is recorded into long-term statistics as fact.
+    """
+    measured = [v for v in values if v is not None]
+    return sum(measured) if measured else None
 
 
 def _series_total(repos: list[RepoData], series: str) -> tuple[int, int]:
