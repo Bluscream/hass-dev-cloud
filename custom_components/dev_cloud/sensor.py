@@ -536,9 +536,15 @@ class DevCloudSponsorsSensor(DevCloudBaseEntity, SensorEntity):
 
     @property
     def native_value(self) -> StateType:
+        """None rather than 0 while the count is genuinely unknown.
+
+        A restored snapshot can say the resource was collected without carrying the figure,
+        and reporting a confident zero there would be a lie that lasts until the next
+        GraphQL refresh. Unknown is the honest state, and the entity stays registered.
+        """
         if not self.coordinator.data:
             return None
-        return self.coordinator.data.sponsors_count or 0
+        return self.coordinator.data.sponsors_count
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -766,10 +772,7 @@ _OPTIONAL_SENSORS: tuple[
     (DevCloudReleaseAssetsSensor, lambda c: _collected(c, "repo_detail")),
     (DevCloudDownloadsSensor, lambda c: _collected(c, "repo_detail")),
     (DevCloudPullsSensor, lambda c: any(p.pull_count for p in c.data.packages)),
-    (
-        DevCloudSponsorsSensor,
-        lambda c: c.data.sponsors_count is not None or c.data.sponsoring_count is not None,
-    ),
+    (DevCloudSponsorsSensor, lambda c: _collected(c, "sponsors")),
     (DevCloudPackagesSensor, lambda c: _collected(c, "packages")),
     (DevCloudRunningJobsSensor, lambda c: _collected(c, "running_jobs")),
     # Traffic needs push access and a token, so most platforms never collect it.

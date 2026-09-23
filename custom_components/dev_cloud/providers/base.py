@@ -146,6 +146,14 @@ class BaseDevCloudProvider(ABC):
         self.scheduler.restore(snapshot.get("resources") or {})
 
         data = from_dict(DevCloudData, snapshot)
+
+        # The snapshot's own `collected` list is the record of what was fetched. It has to
+        # be, because the writer prunes empty lists: zero unread notifications is written
+        # exactly like a platform that has no notifications at all, and restoring only
+        # truthy values read the first as the second. The sensor then disappeared on every
+        # reload of an account that happened to have an empty inbox.
+        collected = {str(key) for key in snapshot.get("collected") or ()}
+
         for key, value in (
             ("profile", data.profile),
             ("repos", data.repos),
@@ -154,21 +162,21 @@ class BaseDevCloudProvider(ABC):
             ("packages", data.packages),
             ("notifications", data.notifications),
         ):
-            if value:
+            if value or key in collected:
                 self._resource_values[key] = value
 
         # Sponsorships expose only totals, so there is no list whose presence implies the
         # resource was collected. Same hole as running_jobs below: without this the resource
         # is absent after a reload, its sensor is never registered, and Home Assistant
         # reports the entity as no longer provided.
-        if data.sponsors_count is not None or data.sponsoring_count is not None:
+        if "sponsors" in collected or data.sponsors_count is not None:
             self._resource_values["sponsors"] = (data.sponsors_count, data.sponsoring_count)
 
         # running_jobs is stored as the (count, jobs) tuple its fetcher returns. It has to
         # come back on restore or the resource stays absent from `collected_resources()`,
         # its sensor is never registered, and Home Assistant reports the entity as no
         # longer provided by the integration.
-        if data.running_jobs_count is not None:
+        if "running_jobs" in collected or data.running_jobs_count is not None:
             self._resource_values["running_jobs"] = (data.running_jobs_count, data.running_jobs)
 
         # Organisation repositories live inside their organisation, so the derived resource

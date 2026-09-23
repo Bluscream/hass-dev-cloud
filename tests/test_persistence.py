@@ -242,3 +242,32 @@ async def test_every_declared_github_resource_survives_a_reload(provider: Any) -
     declared = set(type(provider).resource_policies)
     missing = declared - provider.collected_resources()
     assert not missing, f"not rebuilt by restore(): {sorted(missing)}"
+
+
+async def test_a_collected_but_empty_collection_survives_a_reload(provider: Any) -> None:
+    """Zero unread notifications is a reading; "no notifications here" is an absence.
+
+    The writer prunes empty lists, so both look identical in the file and only the
+    snapshot's own `collected` list tells them apart. Restoring on truthiness alone read
+    the first as the second, and the sensor vanished on every reload of an empty inbox.
+    """
+    data = DevCloudData(
+        profile=ProfileData(username="Bluscream"),
+        notifications=[],
+        collected={"profile", "notifications"},
+    )
+    snapshot = storage.build_snapshot("github", "Bluscream", data)
+    assert "notifications" not in snapshot, "the fixture must exercise the pruned case"
+
+    provider.restore(snapshot)
+
+    assert "notifications" in provider.collected_resources()
+    assert provider._resource_values["notifications"] == []
+
+
+async def test_a_collection_the_platform_never_had_stays_absent(provider: Any) -> None:
+    """The other half: an absence must not become a sensor reporting a confident zero."""
+    data = DevCloudData(profile=ProfileData(username="Bluscream"), collected={"profile"})
+    provider.restore(storage.build_snapshot("github", "Bluscream", data))
+
+    assert "notifications" not in provider.collected_resources()
