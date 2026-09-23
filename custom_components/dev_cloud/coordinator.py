@@ -29,8 +29,10 @@ from .const import (
     DEFAULT_SCAN_INTERVAL_ANONYMOUS,
     DEFAULT_SCAN_INTERVAL_AUTHENTICATED,
     DOMAIN,
+    EVENT_DEV_CLOUD_NOTIFICATION,
+    EVENT_DEV_CLOUD_UPDATE,
 )
-from .events import changes
+from .events import Diff, chunked, diff
 from .models import DevCloudData
 from .providers import DevCloudProviderError, get_provider
 from .storage import (
@@ -112,12 +114,34 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
             update_interval=timedelta(seconds=scan_interval),
         )
 
-    def _fire(self, events: list[tuple[str, dict[str, Any]]]) -> None:
-        """Put each detected change on the bus, tagged with the account it belongs to."""
-        for event, payload in events:
+    def _fire(self, result: Diff, run_id: str) -> None:
+        """Put one poll's changes on the bus, tagged with the account they belong to.
+
+        Updates go out in size-bounded chunks carrying their position in the run, so a
+        consumer can tell a three-part digest from three unrelated ones and knows when it
+        has seen the whole poll. Notifications go out one at a time.
+        """
+        envelope = {
+            "platform": self.platform_id,
+            "account": self.account_name,
+            "run_id": run_id,
+        }
+
+        for change in result.notifications:
+            self.hass.bus.async_fire(EVENT_DEV_CLOUD_NOTIFICATION, {**envelope, **change})
+
+        batches = chunked(result.updates)
+        for index, batch in enumerate(batches, start=1):
             self.hass.bus.async_fire(
-                event,
-                {"platform": self.platform_id, "account": self.account_name, **payload},
+                EVENT_DEV_CLOUD_UPDATE,
+                {
+                    **envelope,
+                    "chunk": index,
+                    "chunks": len(batches),
+                    "count": len(batch),
+                    "total": len(result.updates),
+                    "changes": batch,
+                },
             )
 
     async def _async_restore(self) -> None:
@@ -166,9 +190,14 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         self.last_updated = datetime.now(UTC)
 
         # Serialised once and used twice: diffed against the previous poll, then written.
+        # The diff runs here, on the finished document, rather than anywhere inside the
+        # fetch: a poll is routinely partial, and a resource that was not due reuses its
+        # previous value, which compares equal and reports nothing.
         payload = build_snapshot(self.platform_id, self.account_name, data)
         if self.enable_events:
-            self._fire(changes(self._previous, payload))
+            # The snapshot's own timestamp identifies the run: unique per poll, already in
+            # the payload, and meaningful to a human reading an event in the log.
+            self._fire(diff(self._previous, payload), str(payload["fetched_at"]))
         self._previous = payload
 
         await async_write_snapshot(self.hass, self.platform_id, self.account_name, payload)

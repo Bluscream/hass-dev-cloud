@@ -4,76 +4,192 @@ Sensors say how much of something there is; events say what just happened. "You 
 stars" is a dashboard figure — "someone starred VRCOSC-Modules, it went 41 to 42" is worth a
 push, and carries enough to write the message from.
 
-Detection runs over the **serialised snapshots** rather than the live objects, for three
-reasons. The provider mutates its cached objects in place, so holding a reference to the
-previous poll would compare a thing against itself. The snapshot is already built every poll
-for writing, so diffing it costs nothing extra. And it is the same document reloaded at
-startup, so events survive a restart instead of starting from no baseline.
+Detection runs over the **serialised snapshots**, after a poll has finished, rather than over
+the live objects while one is in flight. The provider mutates its cached objects in place, so
+holding a reference to the previous poll would compare a thing against itself. The snapshot
+is already built every poll for writing, so diffing it costs nothing extra. And it is the
+same document reloaded at startup, so events survive a restart instead of starting from no
+baseline.
 
-Every payload carries the whole item, old and new where both exist, so an automation never
-has to go looking anything up.
+A poll is routinely *partial*: each resource has its own refresh schedule, and one that was
+not due keeps serving its previous value. Those compare equal and produce nothing, so a
+partial scrape reports exactly the parts that moved.
+
+Two event types leave this module, no matter how many kinds of change were found:
+
+* ``dev_cloud_update`` — every change in the poll, batched into size-bounded chunks so a
+  busy poll cannot exceed the recorder's per-event limit.
+* ``dev_cloud_notification`` — one per newly arrived unread notification, which wants to be
+  a notification in its own right rather than a line in a digest.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
-
-from .const import (
-    EVENT_BRANCH_REMOVED,
-    EVENT_FORKS_CHANGED,
-    EVENT_ISSUE_CLOSED,
-    EVENT_NEW_BRANCH,
-    EVENT_NEW_DOWNLOADS,
-    EVENT_NEW_ISSUE,
-    EVENT_NEW_NOTIFICATION,
-    EVENT_NEW_ORG,
-    EVENT_NEW_PACKAGE,
-    EVENT_NEW_PR,
-    EVENT_NEW_PULLS,
-    EVENT_NEW_RELEASE,
-    EVENT_NEW_REPO,
-    EVENT_NEW_SECURITY_ALERT,
-    EVENT_NEW_TAG,
-    EVENT_ORG_REMOVED,
-    EVENT_PACKAGE_CHANGED,
-    EVENT_PACKAGE_REMOVED,
-    EVENT_PR_CLOSED,
-    EVENT_RELEASE_CHANGED,
-    EVENT_RELEASE_REMOVED,
-    EVENT_REPO_ARCHIVED,
-    EVENT_REPO_CHANGED,
-    EVENT_REPO_REMOVED,
-    EVENT_REPO_RENAMED,
-    EVENT_REPO_VISIBILITY_CHANGED,
-    EVENT_SECURITY_ALERTS_RESOLVED,
-    EVENT_STARS_CHANGED,
-    EVENT_TAG_REMOVED,
-)
+from dataclasses import dataclass, field
+from typing import Any, Final, TypedDict
 
 _LOGGER = logging.getLogger(__name__)
 
-Event = tuple[str, dict[str, Any]]
 Item = dict[str, Any]
 
-#: Repository fields worth an event when they change. Deliberately excludes anything that
-#: moves on its own — download counts tick upward constantly and would fire every poll.
-_REPO_WATCHED = ("stars", "forks", "watchers", "description", "default_branch", "upstream")
-_RELEASE_WATCHED = ("name", "tag", "published_at")
-_PACKAGE_WATCHED = ("version",)
 
+class Change(TypedDict, total=False):
+    """One thing that changed, rendered as a single line by a consumer.
 
-_BULKY_REPO_KEYS = frozenset({"releases", "branches", "tags", "issues", "prs", "security_alerts"})
-
-
-def _prune_repo(repo: Item) -> Item:
-    """Return a lightweight copy of a repository dict with bulky collections removed.
-
-    Home Assistant's recorder limits event data to 32,768 bytes. Repositories with
-    many releases, assets, branches, tags, issues, or PRs exceed this limit if the
-    full nested snapshot is passed directly into event payloads.
+    ``kind`` is the specific change ("stars_changed"); ``thing`` is the coarse category it
+    belongs to ("star"), which is what a notification picks an emoji from. Keeping both
+    means a consumer can group by category without having to know every kind.
     """
-    return {k: v for k, v in repo.items() if k not in _BULKY_REPO_KEYS}
+
+    kind: str
+    thing: str
+    #: What the change is about, already human-readable: a repository name, a tag, "#42".
+    subject: str
+    repository: str
+    url: str
+    #: Scalar before/after, present on anything that changed value rather than appeared.
+    old: Any
+    new: Any
+    #: Signed difference, present only when both sides are numeric.
+    delta: float
+    #: True the first time this metric moved off nothing — the first star, the first fork,
+    #: the first clone. Computed here because only the diff knows the previous value.
+    first: bool
+    #: Kind-specific extras, deliberately small. Anything bulky stays in the snapshot.
+    detail: dict[str, Any]
+
+
+#: Coarse categories, used by consumers to pick an emoji per kind of thing.
+THING_REPO: Final = "repository"
+THING_STAR: Final = "star"
+THING_FORK: Final = "fork"
+THING_WATCHER: Final = "watcher"
+THING_RELEASE: Final = "release"
+THING_DOWNLOAD: Final = "download"
+THING_BRANCH: Final = "branch"
+THING_TAG: Final = "tag"
+THING_ISSUE: Final = "issue"
+THING_PR: Final = "pull_request"
+THING_PACKAGE: Final = "package"
+THING_PULL: Final = "pull"
+THING_ORG: Final = "organization"
+THING_SECURITY: Final = "security"
+THING_NOTIFICATION: Final = "notification"
+
+#: Repository fields worth a line when they change. Stars, forks and watchers are absent on
+#: purpose: each gets its own numeric change below, and listing them here too would report
+#: the same star twice. Download counts are absent because they move on their own.
+_REPO_WATCHED: Final = ("description", "default_branch", "upstream")
+_RELEASE_WATCHED: Final = ("name", "tag", "published_at")
+_PACKAGE_WATCHED: Final = ("version",)
+
+#: Repository counters that get a dedicated change with a signed delta.
+_REPO_METRICS: Final = (
+    ("stars", THING_STAR),
+    ("forks", THING_FORK),
+    ("watchers", THING_WATCHER),
+)
+
+#: Collections nested inside a repository. Carried in the snapshot, never in a payload —
+#: one repository's releases and their assets are larger than the whole event budget.
+_BULKY_REPO_KEYS: Final = frozenset(
+    {"releases", "branches", "tags", "issues", "prs", "security_alerts"}
+)
+
+#: Home Assistant's recorder rejects event data past 32 KiB. Chunks are built well under it:
+#: the figure below is the payload budget for the changes themselves, leaving the rest for
+#: the envelope (platform, account, run id, chunk counters) and for JSON's own overhead.
+MAX_EVENT_DATA_BYTES: Final = 32_768
+CHUNK_BUDGET_BYTES: Final = 24_000
+
+#: A single change larger than this is truncated rather than dropped: losing the detail is
+#: recoverable from the snapshot, losing the whole event is not.
+MAX_CHANGE_BYTES: Final = 8_000
+
+
+@dataclass(slots=True)
+class Diff:
+    """Everything one poll turned up, split by how it wants to be delivered."""
+
+    updates: list[Change] = field(default_factory=list)
+    notifications: list[Change] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.updates or self.notifications)
+
+
+def diff(previous: Item | None, current: Item) -> Diff:
+    """Every change between two serialised snapshots.
+
+    Returns nothing without a baseline: the first poll of a fresh account would otherwise
+    announce every repository, package and organisation that already existed.
+    """
+    if not previous:
+        return Diff()
+
+    updates: list[Change] = []
+    updates += _repo_changes(previous, current)
+    updates += _org_changes(previous, current)
+    updates += _package_changes(previous, current)
+
+    if _comparable(previous, current, "packages", "packages"):
+        updates += _pull_changes(previous, current)
+
+    return Diff(updates=updates, notifications=_notification_changes(previous, current))
+
+
+def chunked(changes: list[Change]) -> list[list[Change]]:
+    """Split changes into batches that each fit inside one event.
+
+    Measured by serialising, not estimated from item counts: a repository description and a
+    security advisory differ by two orders of magnitude, so any per-item guess is wrong in
+    one direction or the other. A single change too large to ever fit is truncated to its
+    identifying fields rather than dropped.
+    """
+    batches: list[list[Change]] = []
+    current: list[Change] = []
+    size = 0
+
+    for change in changes:
+        measured = _sizeof(change)
+        if measured > MAX_CHANGE_BYTES:
+            change = _truncate(change)
+            measured = _sizeof(change)
+
+        if current and size + measured > CHUNK_BUDGET_BYTES:
+            batches.append(current)
+            current, size = [], 0
+
+        current.append(change)
+        size += measured
+
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _sizeof(change: Change) -> int:
+    """Serialised size of one change, including the comma that will follow it."""
+    return len(json.dumps(change, default=str, separators=(",", ":"))) + 1
+
+
+def _truncate(change: Change) -> Change:
+    """Reduce an oversized change to what identifies it, keeping the event deliverable."""
+    _LOGGER.debug(
+        "Change %s for %s exceeded the per-change budget; dropping its detail",
+        change.get("kind"),
+        change.get("subject"),
+    )
+    # Drops the bulky fields rather than whitelisting the small ones: `old`, `new` and
+    # `detail` are the only ones that can grow without bound, and everything that identifies
+    # the change survives untouched.
+    kept = change.copy()
+    kept.pop("old", None)
+    kept.pop("new", None)
+    kept["detail"] = {"truncated": True}
+    return kept
 
 
 def _by(items: list[Item] | None, key: str) -> dict[str, Item]:
@@ -83,6 +199,11 @@ def _by(items: list[Item] | None, key: str) -> dict[str, Item]:
 
 def _changed_fields(old: Item, new: Item, watched: tuple[str, ...]) -> list[str]:
     return [f for f in watched if old.get(f) != new.get(f)]
+
+
+def _prune_repo(repo: Item) -> Item:
+    """A repository without its nested collections, small enough to carry in a payload."""
+    return {k: v for k, v in repo.items() if k not in _BULKY_REPO_KEYS}
 
 
 def _comparable(previous: Item, current: Item, resource: str, collection: str) -> bool:
@@ -103,30 +224,31 @@ def _comparable(previous: Item, current: Item, resource: str, collection: str) -
     return True
 
 
-def changes(previous: Item | None, current: Item) -> list[Event]:
-    """Every change between two serialised snapshots.
+def _removals_trustworthy(old: Item, new: Item, field_name: str, repository: str) -> bool:
+    """Whether a nested collection emptying means things were really deleted.
 
-    Returns nothing without a baseline: the first poll of a fresh account would otherwise
-    announce every repository, package and organisation that already existed.
+    The parent survived this poll, so a collection under it going from populated to empty is
+    far more likely to be a rate-limited or failed sub-request than an account deleting
+    every release it had. Additions are still reported either way — a spurious addition
+    cannot happen, because an empty response adds nothing.
 
-    Download counters are reported per repository rather than per asset: an account can
-    hold thousands of assets, but only a handful of repositories move between polls.
+    Removals *are* reported when the parent itself disappeared: that path never reaches here,
+    it emits one change for the parent carrying its last known state.
     """
-    if not previous:
-        return []
+    if old.get(field_name) and not new.get(field_name):
+        _LOGGER.debug(
+            "%s of %s came back empty while the repository survived; "
+            "treating as an incomplete fetch, not a deletion",
+            field_name,
+            repository,
+        )
+        return False
+    return True
 
-    events: list[Event] = []
-    events += _repo_changes(previous, current)
-    events += _simple_collection(
-        previous, current, "orgs", "name", EVENT_NEW_ORG, EVENT_ORG_REMOVED, "organization"
-    )
-    events += _package_changes(previous, current)
-    events += _notification_changes(previous, current)
 
-    if _comparable(previous, current, "packages", "packages"):
-        events += _pull_changes(previous, current)
-
-    return events
+def _first(old: Any, new: Any) -> bool:
+    """Whether a counter just moved off nothing for the first time."""
+    return not old and bool(new)
 
 
 def _all_repos(payload: Item) -> list[Item]:
@@ -141,122 +263,177 @@ def _all_repos(payload: Item) -> list[Item]:
     return repos
 
 
-def _repo_changes(previous: Item, current: Item) -> list[Event]:
+def _repo_changes(previous: Item, current: Item) -> list[Change]:
     if not _comparable(previous, current, "repos", "repos"):
         return []
 
     was, now = _by(_all_repos(previous), "full_name"), _by(_all_repos(current), "full_name")
     if was and not now:
         return []
-    events: list[Event] = []
 
-    for name in now.keys() - was.keys():
-        events.append((EVENT_NEW_REPO, {"repository": name, "repo": now[name]}))
-    for name in was.keys() - now.keys():
-        events.append((EVENT_REPO_REMOVED, {"repository": name, "repo": was[name]}))
+    changes: list[Change] = [
+        {
+            "kind": "new_repo",
+            "thing": THING_REPO,
+            "subject": name,
+            "repository": name,
+            "url": str(now[name].get("url") or ""),
+            "new": _prune_repo(now[name]),
+        }
+        for name in sorted(now.keys() - was.keys())
+    ]
+    changes += [
+        {
+            "kind": "repo_removed",
+            "thing": THING_REPO,
+            "subject": name,
+            "repository": name,
+            "url": str(was[name].get("url") or ""),
+            "old": _prune_repo(was[name]),
+        }
+        for name in sorted(was.keys() - now.keys())
+    ]
 
-    for name in now.keys() & was.keys():
-        events += _one_repo(name, was[name], now[name])
+    for name in sorted(now.keys() & was.keys()):
+        changes += _one_repo(name, was[name], now[name])
 
-    return events
+    return changes
 
 
-def _one_repo(name: str, old: Item, new: Item) -> list[Event]:
+def _one_repo(name: str, old: Item, new: Item) -> list[Change]:
     """Changes within a single repository, from the headline down to its refs."""
-    events: list[Event] = []
-    pruned_old, pruned_new = _prune_repo(old), _prune_repo(new)
-    common = {"repository": name, "old": pruned_old, "new": pruned_new}
+    url = str(new.get("url") or old.get("url") or "")
+    changes: list[Change] = []
 
-    if old.get("stars") != new.get("stars"):
-        events.append(
-            (
-                EVENT_STARS_CHANGED,
-                {
-                    **common,
-                    "stars": new.get("stars", 0),
-                    "previous_stars": old.get("stars", 0),
-                    "delta": new.get("stars", 0) - old.get("stars", 0),
-                },
-            )
+    for metric, thing in _REPO_METRICS:
+        before, after = old.get(metric, 0), new.get(metric, 0)
+        if before == after:
+            continue
+        changes.append(
+            {
+                "kind": f"{metric}_changed",
+                "thing": thing,
+                "subject": name,
+                "repository": name,
+                "url": url,
+                "old": before,
+                "new": after,
+                "delta": after - before,
+                "first": _first(before, after),
+            }
         )
-    if old.get("forks") != new.get("forks"):
-        events.append(
-            (
-                EVENT_FORKS_CHANGED,
-                {
-                    **common,
-                    "forks": new.get("forks", 0),
-                    "previous_forks": old.get("forks", 0),
-                    "delta": new.get("forks", 0) - old.get("forks", 0),
-                },
-            )
-        )
+
     if old.get("is_archived") != new.get("is_archived"):
-        events.append((EVENT_REPO_ARCHIVED, {**common, "archived": bool(new.get("is_archived"))}))
+        changes.append(
+            {
+                "kind": "repo_archived",
+                "thing": THING_REPO,
+                "subject": name,
+                "repository": name,
+                "url": url,
+                "old": bool(old.get("is_archived")),
+                "new": bool(new.get("is_archived")),
+            }
+        )
     if old.get("is_private") != new.get("is_private"):
-        events.append(
-            (EVENT_REPO_VISIBILITY_CHANGED, {**common, "private": bool(new.get("is_private"))})
+        changes.append(
+            {
+                "kind": "repo_visibility_changed",
+                "thing": THING_REPO,
+                "subject": name,
+                "repository": name,
+                "url": url,
+                "old": "private" if old.get("is_private") else "public",
+                "new": "private" if new.get("is_private") else "public",
+            }
         )
     if old.get("name") != new.get("name"):
-        events.append(
-            (
-                EVENT_REPO_RENAMED,
-                {**common, "previous_name": old.get("name"), "name": new.get("name")},
-            )
+        changes.append(
+            {
+                "kind": "repo_renamed",
+                "thing": THING_REPO,
+                "subject": name,
+                "repository": name,
+                "url": url,
+                "old": old.get("name"),
+                "new": new.get("name"),
+            }
         )
 
     fields = _changed_fields(old, new, _REPO_WATCHED)
     if fields:
-        events.append((EVENT_REPO_CHANGED, {**common, "changed": fields}))
+        changes.append(
+            {
+                "kind": "repo_changed",
+                "thing": THING_REPO,
+                "subject": name,
+                "repository": name,
+                "url": url,
+                "detail": {f: {"old": old.get(f), "new": new.get(f)} for f in fields},
+            }
+        )
 
-    events += _release_changes(name, old, new)
-    events += _security_changes(name, old, new)
-    events += _download_changes(name, old, new)
-    events += _ref_changes(
-        name, old, new, "branches", EVENT_NEW_BRANCH, EVENT_BRANCH_REMOVED, "branch"
-    )
-    events += _ref_changes(name, old, new, "tags", EVENT_NEW_TAG, EVENT_TAG_REMOVED, "tag")
-    events += _thread_changes(
-        name, old, new, "issues", EVENT_NEW_ISSUE, EVENT_ISSUE_CLOSED, "issue"
-    )
-    events += _thread_changes(name, old, new, "prs", EVENT_NEW_PR, EVENT_PR_CLOSED, "pull_request")
-    return events
+    changes += _release_changes(name, old, new)
+    changes += _security_changes(name, old, new)
+    changes += _download_changes(name, old, new)
+    changes += _ref_changes(name, old, new, "branches", THING_BRANCH, "branch")
+    changes += _ref_changes(name, old, new, "tags", THING_TAG, "tag")
+    changes += _thread_changes(name, old, new, "issues", THING_ISSUE, "issue")
+    changes += _thread_changes(name, old, new, "prs", THING_PR, "pull_request")
+    return changes
 
 
-def _release_changes(repository: str, old: Item, new: Item) -> list[Event]:
+def _release_changes(repository: str, old: Item, new: Item) -> list[Change]:
     was, now = _by(old.get("releases"), "tag"), _by(new.get("releases"), "tag")
-    events: list[Event] = []
+    changes: list[Change] = []
 
-    for tag in now.keys() - was.keys():
-        events.append(
-            (EVENT_NEW_RELEASE, {"repository": repository, "tag": tag, "release": now[tag]})
+    for tag in sorted(now.keys() - was.keys()):
+        changes.append(
+            {
+                "kind": "new_release",
+                "thing": THING_RELEASE,
+                "subject": tag,
+                "repository": repository,
+                "url": str(now[tag].get("url") or ""),
+                "new": now[tag],
+                # The repository's first release ever, not merely its newest.
+                "first": not was,
+            }
         )
-    for tag in was.keys() - now.keys():
-        events.append(
-            (EVENT_RELEASE_REMOVED, {"repository": repository, "tag": tag, "release": was[tag]})
-        )
-    for tag in now.keys() & was.keys():
+
+    if _removals_trustworthy(old, new, "releases", repository):
+        for tag in sorted(was.keys() - now.keys()):
+            changes.append(
+                {
+                    "kind": "release_removed",
+                    "thing": THING_RELEASE,
+                    "subject": tag,
+                    "repository": repository,
+                    "url": str(was[tag].get("url") or ""),
+                    "old": was[tag],
+                }
+            )
+
+    for tag in sorted(now.keys() & was.keys()):
         fields = _changed_fields(was[tag], now[tag], _RELEASE_WATCHED)
         if fields:
-            events.append(
-                (
-                    EVENT_RELEASE_CHANGED,
-                    {
-                        "repository": repository,
-                        "tag": tag,
-                        "old": was[tag],
-                        "new": now[tag],
-                        "changed": fields,
-                    },
-                )
+            changes.append(
+                {
+                    "kind": "release_changed",
+                    "thing": THING_RELEASE,
+                    "subject": tag,
+                    "repository": repository,
+                    "url": str(now[tag].get("url") or ""),
+                    "detail": {f: {"old": was[tag].get(f), "new": now[tag].get(f)} for f in fields},
+                }
             )
-    return events
+    return changes
 
 
-def _security_changes(repository: str, old: Item, new: Item) -> list[Event]:
+def _security_changes(repository: str, old: Item, new: Item) -> list[Change]:
     """New vulnerability alerts one by one; resolutions batched.
 
-    A new alert is something to act on, so each gets its own event with the advisory
+    A new alert is something to act on, so each gets its own line with the advisory
     attached. Resolutions arrive in bulk — one dependency bump can clear dozens at once, and
     one repository here has 68 open — so they are summarised per repository instead.
     """
@@ -265,36 +442,43 @@ def _security_changes(repository: str, old: Item, new: Item) -> list[Event]:
     if not was and not now:
         return []
 
-    events: list[Event] = [
-        (
-            EVENT_NEW_SECURITY_ALERT,
-            {"repository": repository, "alert": now[n], **now[n]},
-        )
+    changes: list[Change] = [
+        {
+            "kind": "new_security_alert",
+            "thing": THING_SECURITY,
+            "subject": str(now[n].get("ghsa") or now[n].get("package") or n),
+            "repository": repository,
+            "url": str(now[n].get("url") or ""),
+            "new": now[n],
+        }
         for n in sorted(now.keys() - was.keys())
     ]
 
+    if not _removals_trustworthy(old, new, "security_alerts", repository):
+        return changes
+
     resolved = [was[n] for n in sorted(was.keys() - now.keys())]
     if resolved:
-        events.append(
-            (
-                EVENT_SECURITY_ALERTS_RESOLVED,
-                {
-                    "repository": repository,
-                    "resolved": len(resolved),
-                    "remaining": len(now),
-                    "alerts": resolved,
-                },
-            )
+        changes.append(
+            {
+                "kind": "security_alerts_resolved",
+                "thing": THING_SECURITY,
+                "subject": repository,
+                "repository": repository,
+                "old": len(was),
+                "new": len(now),
+                "delta": -len(resolved),
+                "detail": {"resolved": len(resolved), "remaining": len(now)},
+            }
         )
-    return events
+    return changes
 
 
-def _download_changes(repository: str, old: Item, new: Item) -> list[Event]:
-    """One event per repository whose assets gained downloads.
+def _download_changes(repository: str, old: Item, new: Item) -> list[Change]:
+    """One line per repository whose assets gained downloads.
 
     Per asset would be unusable — this account holds 3,581 of them — but per repository is
-    exactly one notification per thing that actually moved, with the per-asset detail
-    attached for the message.
+    exactly one line per thing that actually moved, with the per-asset detail attached.
     """
     was = _asset_downloads(old)
     now = _asset_downloads(new)
@@ -306,18 +490,24 @@ def _download_changes(repository: str, old: Item, new: Item) -> list[Event]:
     if not gains:
         return []
 
+    total, previous_total = sum(now.values()), sum(was.get(k, 0) for k in now)
     return [
-        (
-            EVENT_NEW_DOWNLOADS,
-            {
-                "repository": repository,
-                "delta": sum(g["delta"] for g in gains),
-                "total": sum(now.values()),
-                "previous_total": sum(was.get(k, 0) for k in now),
+        {
+            "kind": "new_downloads",
+            "thing": THING_DOWNLOAD,
+            "subject": repository,
+            "repository": repository,
+            "url": str(new.get("url") or ""),
+            "old": previous_total,
+            "new": total,
+            "delta": total - previous_total,
+            # The first download this repository has ever served, not merely a new one.
+            "first": _first(sum(was.values()), total),
+            "detail": {
                 "assets": len(gains),
                 "breakdown": sorted(gains, key=_delta, reverse=True)[:10],
             },
-        )
+        }
     ]
 
 
@@ -336,100 +526,180 @@ def _asset_downloads(repo: Item) -> dict[tuple[str, str], int]:
     }
 
 
-def _pull_changes(previous: Item, current: Item) -> list[Event]:
-    """One event per image that gained pulls."""
+def _pull_changes(previous: Item, current: Item) -> list[Change]:
+    """One line per image that gained pulls."""
     was = {
         str(p.get("name")): int(p.get("pull_count", 0) or 0) for p in previous.get("packages") or []
     }
-    events: list[Event] = []
+    changes: list[Change] = []
 
     for package in current.get("packages") or []:
         name = str(package.get("name"))
         after = int(package.get("pull_count", 0) or 0)
         before = was.get(name, 0)
         if after > before:
-            events.append(
-                (
-                    EVENT_NEW_PULLS,
-                    {
-                        "name": name,
-                        "package": package,
-                        "pulls": after,
-                        "previous_pulls": before,
-                        "delta": after - before,
-                    },
-                )
+            changes.append(
+                {
+                    "kind": "new_pulls",
+                    "thing": THING_PULL,
+                    "subject": name,
+                    "url": str(package.get("url") or ""),
+                    "old": before,
+                    "new": after,
+                    "delta": after - before,
+                    "first": _first(before, after),
+                }
             )
-    return events
+    return changes
 
 
 def _ref_changes(
-    repository: str, old: Item, new: Item, field: str, added: str, removed: str, label: str
-) -> list[Event]:
-    was, now = _by(old.get(field), "name"), _by(new.get(field), "name")
-    return [
-        *(
-            (added, {"repository": repository, label: now[n], "name": n})
-            for n in now.keys() - was.keys()
-        ),
-        *(
-            (removed, {"repository": repository, label: was[n], "name": n})
-            for n in was.keys() - now.keys()
-        ),
+    repository: str, old: Item, new: Item, field_name: str, thing: str, label: str
+) -> list[Change]:
+    was, now = _by(old.get(field_name), "name"), _by(new.get(field_name), "name")
+    changes: list[Change] = [
+        {
+            "kind": f"new_{label}",
+            "thing": thing,
+            "subject": name,
+            "repository": repository,
+            "new": now[name],
+        }
+        for name in sorted(now.keys() - was.keys())
     ]
+    if _removals_trustworthy(old, new, field_name, repository):
+        changes += [
+            {
+                "kind": f"{label}_removed",
+                "thing": thing,
+                "subject": name,
+                "repository": repository,
+                "old": was[name],
+            }
+            for name in sorted(was.keys() - now.keys())
+        ]
+    return changes
 
 
 def _thread_changes(
-    repository: str, old: Item, new: Item, field: str, opened: str, closed: str, label: str
-) -> list[Event]:
+    repository: str, old: Item, new: Item, field_name: str, thing: str, label: str
+) -> list[Change]:
     """Issues and pull requests. The lists hold only open ones, so a disappearance means it
     was closed or merged rather than deleted."""
-    was, now = _by(old.get(field), "number"), _by(new.get(field), "number")
-    return [
-        *((opened, {"repository": repository, label: now[n]}) for n in now.keys() - was.keys()),
-        *((closed, {"repository": repository, label: was[n]}) for n in was.keys() - now.keys()),
+    was, now = _by(old.get(field_name), "number"), _by(new.get(field_name), "number")
+    changes: list[Change] = [
+        {
+            "kind": f"new_{label}",
+            "thing": thing,
+            "subject": f"#{n}",
+            "repository": repository,
+            "url": str(now[n].get("url") or ""),
+            "new": now[n],
+        }
+        for n in sorted(now.keys() - was.keys())
     ]
+    if _removals_trustworthy(old, new, field_name, repository):
+        changes += [
+            {
+                "kind": f"{label}_closed",
+                "thing": thing,
+                "subject": f"#{n}",
+                "repository": repository,
+                "url": str(was[n].get("url") or ""),
+                "old": was[n],
+            }
+            for n in sorted(was.keys() - now.keys())
+        ]
+    return changes
 
 
-def _simple_collection(
-    previous: Item, current: Item, collection: str, key: str, added: str, removed: str, label: str
-) -> list[Event]:
-    if not _comparable(previous, current, collection, collection):
+def _org_changes(previous: Item, current: Item) -> list[Change]:
+    if not _comparable(previous, current, "orgs", "orgs"):
         return []
-    was, now = _by(previous.get(collection), key), _by(current.get(collection), key)
-    return [
-        *((added, {label: now[n], "name": n}) for n in now.keys() - was.keys()),
-        *((removed, {label: was[n], "name": n}) for n in was.keys() - now.keys()),
+    was, now = _by(previous.get("orgs"), "name"), _by(current.get("orgs"), "name")
+    changes: list[Change] = [
+        {
+            "kind": "new_org",
+            "thing": THING_ORG,
+            "subject": name,
+            "url": str(now[name].get("url") or ""),
+            "new": {k: v for k, v in now[name].items() if k != "repos"},
+        }
+        for name in sorted(now.keys() - was.keys())
     ]
+    changes += [
+        {
+            "kind": "org_removed",
+            "thing": THING_ORG,
+            "subject": name,
+            "url": str(was[name].get("url") or ""),
+            "old": {k: v for k, v in was[name].items() if k != "repos"},
+        }
+        for name in sorted(was.keys() - now.keys())
+    ]
+    return changes
 
 
-def _package_changes(previous: Item, current: Item) -> list[Event]:
+def _package_changes(previous: Item, current: Item) -> list[Change]:
     if not _comparable(previous, current, "packages", "packages"):
         return []
     was, now = _by(previous.get("packages"), "name"), _by(current.get("packages"), "name")
-    events: list[Event] = [
-        *((EVENT_NEW_PACKAGE, {"package": now[n], "name": n}) for n in now.keys() - was.keys()),
-        *((EVENT_PACKAGE_REMOVED, {"package": was[n], "name": n}) for n in was.keys() - now.keys()),
+    changes: list[Change] = [
+        {
+            "kind": "new_package",
+            "thing": THING_PACKAGE,
+            "subject": name,
+            "url": str(now[name].get("url") or ""),
+            "new": now[name],
+        }
+        for name in sorted(now.keys() - was.keys())
     ]
-    for name in now.keys() & was.keys():
+    changes += [
+        {
+            "kind": "package_removed",
+            "thing": THING_PACKAGE,
+            "subject": name,
+            "url": str(was[name].get("url") or ""),
+            "old": was[name],
+        }
+        for name in sorted(was.keys() - now.keys())
+    ]
+    for name in sorted(now.keys() & was.keys()):
         fields = _changed_fields(was[name], now[name], _PACKAGE_WATCHED)
         if fields:
-            events.append(
-                (
-                    EVENT_PACKAGE_CHANGED,
-                    {"name": name, "old": was[name], "new": now[name], "changed": fields},
-                )
+            changes.append(
+                {
+                    "kind": "package_changed",
+                    "thing": THING_PACKAGE,
+                    "subject": name,
+                    "url": str(now[name].get("url") or ""),
+                    "detail": {
+                        f: {"old": was[name].get(f), "new": now[name].get(f)} for f in fields
+                    },
+                }
             )
-    return events
+    return changes
 
 
-def _notification_changes(previous: Item, current: Item) -> list[Event]:
+def _notification_changes(previous: Item, current: Item) -> list[Change]:
+    """Newly arrived unread notifications, one change each.
+
+    These leave as their own event type rather than as lines in a digest: a notification is
+    already the unit a person acts on, and batching them would bury the one that mattered.
+    """
     if not _comparable(previous, current, "notifications", "notifications"):
         return []
     was = _by(previous.get("notifications"), "notification_id")
     now = _by(current.get("notifications"), "notification_id")
     return [
-        (EVENT_NEW_NOTIFICATION, {"notification": now[n], **now[n]})
-        for n in now.keys() - was.keys()
+        {
+            "kind": "new_notification",
+            "thing": THING_NOTIFICATION,
+            "subject": str(now[n].get("title") or n),
+            "repository": str(now[n].get("repository") or ""),
+            "url": str(now[n].get("url") or ""),
+            "new": now[n],
+        }
+        for n in sorted(now.keys() - was.keys())
         if now[n].get("unread", True)
     ]

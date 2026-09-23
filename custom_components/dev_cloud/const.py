@@ -42,44 +42,16 @@ RUNNING_JOBS_CONCURRENCY: Final = 5
 NOTIFICATION_ATTRIBUTE_LIMIT: Final = 20
 
 # Event names
-EVENT_DEV_CLOUD: Final = "dev_cloud_event"
-EVENT_NEW_REPO: Final = "dev_cloud_new_repo"
-EVENT_REPO_REMOVED: Final = "dev_cloud_repo_removed"
-EVENT_REPO_CHANGED: Final = "dev_cloud_repo_changed"
-EVENT_REPO_RENAMED: Final = "dev_cloud_repo_renamed"
-EVENT_REPO_ARCHIVED: Final = "dev_cloud_repo_archived"
-EVENT_REPO_VISIBILITY_CHANGED: Final = "dev_cloud_repo_visibility_changed"
-EVENT_STARS_CHANGED: Final = "dev_cloud_stars_changed"
-EVENT_FORKS_CHANGED: Final = "dev_cloud_forks_changed"
-
-EVENT_NEW_RELEASE: Final = "dev_cloud_new_release"
-EVENT_RELEASE_REMOVED: Final = "dev_cloud_release_removed"
-EVENT_RELEASE_CHANGED: Final = "dev_cloud_release_changed"
-
-EVENT_NEW_BRANCH: Final = "dev_cloud_new_branch"
-EVENT_BRANCH_REMOVED: Final = "dev_cloud_branch_removed"
-EVENT_NEW_TAG: Final = "dev_cloud_new_tag"
-EVENT_TAG_REMOVED: Final = "dev_cloud_tag_removed"
-
-EVENT_NEW_ISSUE: Final = "dev_cloud_new_issue"
-EVENT_ISSUE_CLOSED: Final = "dev_cloud_issue_closed"
-EVENT_NEW_PR: Final = "dev_cloud_new_pull_request"
-EVENT_PR_CLOSED: Final = "dev_cloud_pull_request_closed"
-
-EVENT_NEW_PACKAGE: Final = "dev_cloud_new_package"
-EVENT_PACKAGE_REMOVED: Final = "dev_cloud_package_removed"
-EVENT_PACKAGE_CHANGED: Final = "dev_cloud_package_changed"
-
-EVENT_NEW_ORG: Final = "dev_cloud_new_org"
-EVENT_ORG_REMOVED: Final = "dev_cloud_org_removed"
-
-EVENT_NEW_DOWNLOADS: Final = "dev_cloud_new_downloads"
-EVENT_NEW_PULLS: Final = "dev_cloud_new_pulls"
-
-EVENT_NEW_SECURITY_ALERT: Final = "dev_cloud_new_security_alert"
-EVENT_SECURITY_ALERTS_RESOLVED: Final = "dev_cloud_security_alerts_resolved"
-
-EVENT_NEW_NOTIFICATION: Final = "dev_cloud_new_notification"
+#
+# Two, deliberately. Twenty-nine separate event types meant every consumer had to enumerate
+# all of them to see anything, and a busy poll fired hundreds of individual events. What a
+# change *is* now lives in the payload's `kind` field instead of in the event type.
+#
+# dev_cloud_update carries a batch of changes; see events.py for the chunking. A
+# notification is the one thing already shaped like a notification, so it keeps its own type
+# rather than arriving as a line inside a digest.
+EVENT_DEV_CLOUD_UPDATE: Final = "dev_cloud_update"
+EVENT_DEV_CLOUD_NOTIFICATION: Final = "dev_cloud_notification"
 
 # Platforms
 PLATFORM_GITHUB: Final = "github"
