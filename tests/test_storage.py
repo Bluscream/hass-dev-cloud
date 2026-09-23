@@ -42,14 +42,26 @@ def test_json_url_escapes_an_account_name_that_survives_slugification() -> None:
     assert str(storage.build_json_url("github", "a b/c")) == "/local/dev/github/a_b_c.json"
 
 
-def test_serialize_drops_only_the_derivable_count() -> None:
-    """running_jobs_count is len(running_jobs); sponsors_count has no list to derive from."""
+def test_serialize_keeps_the_running_jobs_count_beside_its_list() -> None:
+    """It looks derivable from len(running_jobs) and is not.
+
+    None means "this platform has no CI, or there is no token" and 0 means "none are
+    running"; an empty list reads the same either way. Dropping the count left it
+    unrestorable, so after a reload the Running Jobs sensor was never registered and Home
+    Assistant reported the entity as no longer provided by the integration.
+    """
     data = _snapshot(running_jobs_count=0, running_jobs=[], sponsors_count=3)
     payload = storage.build_snapshot("github", "Bluscream", data)
 
-    assert "running_jobs_count" not in payload
+    assert payload["running_jobs_count"] == 0
     assert payload["sponsors_count"] == 3
     assert payload["json_url"] == "/local/dev/github/bluscream.json"
+
+
+def test_serialize_omits_the_running_jobs_count_a_platform_does_not_have() -> None:
+    """None is pruned, so its absence is what tells a restore there is no CI here."""
+    payload = storage.build_snapshot("npm", "bluscream", _snapshot(running_jobs_count=None))
+    assert "running_jobs_count" not in payload
 
 
 def test_serialize_redacts_credential_shaped_keys() -> None:

@@ -129,6 +129,34 @@ def test_persisted_state_round_trips_through_the_scheduler() -> None:
     assert not second.should_fetch("repos")
 
 
+async def test_restore_brings_back_the_running_jobs_resource(provider: Any) -> None:
+    """Otherwise its sensor disappears on every reload.
+
+    running_jobs was absent from restore(), so after a reload the resource was not in
+    collected_resources(), the sensor was never registered, and Home Assistant marked the
+    entity "no longer being provided by the dev_cloud integration".
+    """
+    data = DevCloudData(
+        profile=ProfileData(username="Bluscream"),
+        running_jobs_count=0,
+        running_jobs=[],
+    )
+    provider.restore(storage.build_snapshot("github", "Bluscream", data))
+
+    assert "running_jobs" in provider.collected_resources()
+    assert provider._resource_values["running_jobs"] == (0, [])
+
+
+async def test_restore_leaves_running_jobs_absent_when_the_platform_has_no_ci(
+    provider: Any,
+) -> None:
+    """A count of None must not become a zero that registers a sensor reporting nothing."""
+    data = DevCloudData(profile=ProfileData(username="Bluscream"), running_jobs_count=None)
+    provider.restore(storage.build_snapshot("github", "Bluscream", data))
+
+    assert "running_jobs" not in provider.collected_resources()
+
+
 async def test_restore_rebuilds_the_release_and_ref_detail(provider: Any) -> None:
     """Releases, branches and tags live inside their repository, so the grouped resources
     are reconstructed from there rather than stored a second time."""

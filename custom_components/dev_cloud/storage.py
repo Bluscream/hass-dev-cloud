@@ -37,13 +37,6 @@ WWW_SUBDIR = "dev"
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^a-z0-9._-]+")
 
-# Every list in this payload is fetched to completion, so any count measuring one would be a
-# second copy of len(). Those counts were removed from the model outright; the only survivor
-# is running_jobs_count, which the model still needs because None ("no CI, or no token")
-# carries meaning that len(running_jobs) cannot express. It is dropped here instead.
-# sponsors_count/sponsoring_count stay in the payload: the API exposes no list for them.
-_REDUNDANT_COUNT_FIELDS = frozenset({"running_jobs_count"})
-
 # `/local` is served without authentication, so this file is readable by anyone who can
 # reach Home Assistant. No provider puts a credential in the snapshot today, but `extra`
 # dicts pass provider payloads through verbatim — one future field named `token` would be
@@ -151,7 +144,11 @@ def build_snapshot(platform: str, account: str, data: DevCloudData) -> dict[str,
     snapshot = _prune(
         _drop_repo_counts_with_lists(
             _drop_totals_with_a_list(
-                _redact({k: v for k, v in asdict(data).items() if k not in _REDUNDANT_COUNT_FIELDS})
+                # running_jobs_count is kept even though running_jobs is a list beside it.
+                # None means "this platform has no CI, or there is no token" and an empty
+                # list cannot say that -- dropping it was what left the Running Jobs sensor
+                # unrestorable, and so marked "no longer provided" after every reload.
+                _redact(asdict(data))
             )
         )
     )

@@ -147,6 +147,13 @@ class BaseDevCloudProvider(ABC):
             if value:
                 self._resource_values[key] = value
 
+        # running_jobs is stored as the (count, jobs) tuple its fetcher returns. It has to
+        # come back on restore or the resource stays absent from `collected_resources()`,
+        # its sensor is never registered, and Home Assistant reports the entity as no
+        # longer provided by the integration.
+        if data.running_jobs_count is not None:
+            self._resource_values["running_jobs"] = (data.running_jobs_count, data.running_jobs)
+
         # Organisation repositories live inside their organisation, so the derived resource
         # is reconstructed from them rather than stored twice.
         org_repos = {org.name: org.repos for org in data.orgs if org.repos}

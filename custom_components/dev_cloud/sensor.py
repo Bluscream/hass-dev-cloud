@@ -624,7 +624,7 @@ _OPTIONAL_SENSORS: tuple[
         lambda c: c.data.sponsors_count is not None or c.data.sponsoring_count is not None,
     ),
     (DevCloudPackagesSensor, lambda c: _collected(c, "packages")),
-    (DevCloudRunningJobsSensor, lambda c: c.data.running_jobs_count is not None),
+    (DevCloudRunningJobsSensor, lambda c: _collected(c, "running_jobs")),
     # Only GitHub reports these, so elsewhere the resource is never collected.
     (DevCloudSecurityAlertsSensor, lambda c: _collected(c, "repo_detail")),
 )
