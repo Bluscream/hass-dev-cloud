@@ -7,7 +7,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, PLATFORMS
+from .const import DOMAIN
 from .coordinator import DevCloudCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,6 +33,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DevCloudConfigEntry) -> 
                     with contextlib.suppress(Exception):
                         importlib.reload(mod)
 
+    # Re-resolved for the same reason as the coordinator below: this module is not itself
+    # reloaded, so the module-level PLATFORMS imported at first load is whatever const.py
+    # said back then. A platform added since - the button platform was the first - would
+    # never be forwarded, and the new entities simply would not appear until Home Assistant
+    # was restarted outright.
+    from .const import PLATFORMS as CURRENT_PLATFORMS
+
     # Invalidate HA internal integration platform cache
     with contextlib.suppress(Exception):
         from homeassistant.loader import DATA_INTEGRATIONS
@@ -42,7 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DevCloudConfigEntry) -> 
         integration = hass.data.get(DATA_INTEGRATIONS, {}).get(DOMAIN)
         cache = getattr(integration, "_cache", None)
         if cache is not None:
-            for platform in PLATFORMS:
+            for platform in CURRENT_PLATFORMS:
                 cache.pop(f"{DOMAIN}.{platform}", None)
 
     # Invalidate translation cache so newly added translation strings show up immediately
@@ -65,14 +72,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: DevCloudConfigEntry) -> 
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, CURRENT_PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: DevCloudConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    # Re-resolved rather than using the module-level import, for the same staleness reason
+    # as the setup above. Unloading a platform that was never set up is a no-op, so the
+    # worst case of the two lists disagreeing is harmless.
+    from .const import PLATFORMS as CURRENT_PLATFORMS
+
+    return await hass.config_entries.async_unload_platforms(entry, CURRENT_PLATFORMS)
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: DevCloudConfigEntry) -> None:
