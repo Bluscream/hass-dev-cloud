@@ -742,6 +742,39 @@ def test_a_measured_zero_is_written_to_the_snapshot() -> None:
     assert "watchers" in snapshot["repos"][0]
 
 
+def test_advisories_appearing_across_many_repositories_are_the_walk_arriving() -> None:
+    """The storm that got through the first version of this guard, reproduced.
+
+    An owned organisation whose advisories survived the restore bug made the account look
+    like it had known about advisories all along, while every one of the account's own
+    repositories was quietly going from unmeasured to populated. Counting per repository
+    rather than account-wide is what tells the two apart.
+    """
+    org_repo = _repo_with_alerts("Mine/x", (9,))
+    org_repo.branches = [{"name": "main", "sha": "s"}]
+    org = OrgData(name="Mine", is_owned=True, repos=[org_repo])
+
+    before = [_repo(f"me/r{i}", branches=("main",)) for i in range(events.MASS_ARRIVAL + 5)]
+    after = []
+    for i in range(events.MASS_ARRIVAL + 5):
+        repo = _repo_with_alerts(f"me/r{i}", (1, 2))
+        repo.branches = [{"name": "main", "sha": "s"}]
+        after.append(repo)
+
+    result = events.diff(_snap(repos=before, orgs=[org]), _snap(repos=after, orgs=[org]))
+    assert "new_security_alert" not in _kinds(result)
+
+
+def test_one_repository_gaining_its_first_advisory_is_still_news() -> None:
+    quiet, noisy = _repo("me/a", branches=("main",)), _repo_with_alerts("me/b", (5,))
+    noisy.branches = [{"name": "main", "sha": "s"}]
+    gained = _repo_with_alerts("me/a", (1,))
+    gained.branches = [{"name": "main", "sha": "s"}]
+
+    result = events.diff(_snap(repos=[quiet, noisy]), _snap(repos=[gained, noisy]))
+    assert _one(result, "new_security_alert")["subject"] == "GHSA-1"
+
+
 def test_advisories_appearing_account_wide_are_the_walk_arriving() -> None:
     """871 advisories do not get published in the same ten minutes.
 

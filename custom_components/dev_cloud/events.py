@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Final, TypedDict
 
@@ -275,10 +274,45 @@ def _is_mass_arrival(before: int, after: int) -> bool:
     return before == 0 and after >= MASS_ARRIVAL
 
 
-def _known_collections(repos: Iterable[Item]) -> frozenset[str]:
-    """Which ambiguous collections the account had anything in at all last poll."""
-    repos = list(repos)
-    return frozenset(f for f in _AMBIGUOUS_COLLECTIONS if any(r.get(f) for r in repos))
+def _settled_collections(was: dict[str, Item], now: dict[str, Item]) -> frozenset[str]:
+    """Ambiguous collections that did not appear across many repositories at once.
+
+    One repository gaining its first advisory is news. Five hundred gaining theirs in the
+    same poll is the walk that fills them having returned - an empty list and a list nobody
+    fetched are written to the snapshot identically, so counting how many repositories
+    gained one simultaneously is the only way to tell.
+
+    Measured per repository rather than account-wide, which an earlier version got wrong:
+    an owned organisation whose advisories survived made the account look like it had known
+    about advisories all along, while every one of the account's own repositories was
+    quietly going from unmeasured to populated.
+    """
+    shared = now.keys() & was.keys()
+    settled: list[str] = []
+
+    for collection in _AMBIGUOUS_COLLECTIONS:
+        appeared = sum(
+            1 for name in shared if not was[name].get(collection) and now[name].get(collection)
+        )
+        # Two readings of the same evidence, because one alone misses a shape. A large
+        # account shows the fetch arriving as many repositories gaining the collection at
+        # once; a small one never reaches that count, but shows it as the account having
+        # had none of it anywhere at all until now.
+        had_none = not any(repo.get(collection) for repo in was.values())
+        has_some = any(repo.get(collection) for repo in now.values())
+
+        if appeared >= MASS_ARRIVAL or (had_none and has_some):
+            _LOGGER.debug(
+                "%s appeared on %d repositories (account had none: %s); "
+                "treating as the fetch arriving rather than as new items",
+                collection,
+                appeared,
+                had_none,
+            )
+            continue
+        settled.append(collection)
+
+    return frozenset(settled)
 
 
 def _scope_changed_repos(previous: Item, current: Item) -> set[str]:
@@ -382,7 +416,7 @@ def _repo_changes(previous: Item, current: Item) -> list[Change]:
     # a list nobody fetched are written to the snapshot identically, so nothing about one
     # repository can tell them apart. This is the same rule as a collection that emptied
     # entirely being read as a failed fetch, pointed the other way.
-    known = _known_collections(was.values())
+    known = _settled_collections(was, now)
 
     for name in sorted(now.keys() & was.keys()):
         changes += _one_repo(name, was[name], now[name], known=known)
