@@ -731,14 +731,18 @@ function boards(data) {
     leaderboard(`Top ${TOP_N} assets by downloads`, assets, (a) => a.downloads, [
       {
         label: "Asset",
-        // The download URL when the walk carried one, the release page otherwise: detail
-        // cached before that field existed has no URL, and a dead guess is worse than a
-        // live detour.
+        // Three things named, so three separate destinations: the asset itself, the
+        // repository it belongs to, and the release it was published in.
+        //
+        // The asset falls back to its release page when the walk carried no download URL -
+        // detail cached before that field existed has none, and a dead guess assembled from
+        // the release URL is worse than a live detour.
         cell: (a) => el("span", {},
           linked(a.url || a._release, a.name || "—"),
           el("span", { className: "dim" }, " · "),
           linked(a._repo.url, a._repo.full_name || "", "dim"),
-          el("span", { className: "dim" }, ` · ${a._tag || ""}`),
+          el("span", { className: "dim" }, " · "),
+          linked(a._release, a._tag || "", "dim"),
         ),
       },
       valueCell("Downloads"),
