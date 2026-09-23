@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Developer Cloud</title>
+<!--
+  Served from /local/dev/<platform>/index.html, beside the account snapshots it reads.
+
+  Written by storage.py, which substitutes the account list below; everything else is
+  static. Deliberately one self-contained file with no external requests: /local is served
+  by Home Assistant itself, often on a LAN with no route out, and a page about your own
+  data should not need somebody else's CDN to render.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #14171a; --muted: #5b6672;
+    --line: #e3e7ec; --accent: #2f6feb; --warn: #b54708; --good: #077d55;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --ink: #e8ecf1; --muted: #93a1b0;
+      --line: #262c35; --accent: #6ea8ff; --warn: #f0a868; --good: #55d6a0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  h1 { font-size: 26px; margin: 0 0 2px; }
+  h2 { font-size: 17px; margin: 32px 0 10px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px;
+  }
+
+  header.profile { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  header.profile img { width: 72px; height: 72px; border-radius: 50%; border: 1px solid var(--line); }
+  .sub { color: var(--muted); font-size: 14px; }
+  .bio { margin: 8px 0 0; max-width: 60ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    font-size: 12px; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 999px; padding: 2px 9px;
+  }
+
+  .tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); margin-top: 14px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 13px; }
+  .tile .v { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td.rank { color: var(--muted); width: 2.5em; text-align: right; font-variant-numeric: tabular-nums; }
+  .name { font-weight: 500; }
+  .dim { color: var(--muted); }
+
+  .grid2 { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  .tablecard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .tablecard h3 { margin: 0; padding: 12px 14px; font-size: 14px; border-bottom: 1px solid var(--line); }
+  .tablecard .empty { padding: 14px; color: var(--muted); font-size: 14px; }
+  .scroll { max-height: 520px; overflow-y: auto; }
+
+  nav.accounts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+  nav.accounts button {
+    font: inherit; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  nav.accounts button[aria-current="true"] { border-color: var(--accent); color: var(--accent); }
+  .status { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .error { color: var(--warn); }
+  footer { margin-top: 40px; font-size: 12px; color: var(--muted); }
+  @media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="accounts" id="accounts" hidden></nav>
+  <div id="app"><p class="status">Loading…</p></div>
+  <footer id="footer"></footer>
+</div>
+
+<script>
+"use strict";
+
+/** Substituted by storage.py from the snapshots actually present in this directory. */
+const ACCOUNTS = __ACCOUNTS__;
+/** How many rows each leaderboard shows. */
+const TOP_N = 25;
+
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, props = {}, ...kids) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const kid of kids.flat()) if (kid != null) node.append(kid);
+  return node;
+};
+/** The snapshot writer prunes nulls, empty strings and empty lists, so nothing is certain. */
+const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
+const fmt = (v) => num(v).toLocaleString();
+const list = (v) => (Array.isArray(v) ? v : []);
+const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+
+function when(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso) : d.toLocaleString();
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const secs = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (!isFinite(secs)) return "";
+  const steps = [[86400, "d"], [3600, "h"], [60, "m"]];
+  for (const [size, suffix] of steps) if (secs >= size) return `${Math.floor(secs / size)}${suffix} ago`;
+  return "just now";
+}
+
+/** Every repository in the snapshot: the account's own, plus each organisation's. */
+function allRepos(data) {
+  return [
+    ...list(data.repos),
+    ...list(data.orgs).flatMap((org) =>
+      list(org.repos).map((r) => ({ ...r, _org: org.name }))
+    ),
+  ];
+}
+
+const assetsOf = (repo) => list(repo.releases).flatMap((rel) => list(rel.assets));
+const downloadsOf = (repo) => assetsOf(repo).reduce((sum, a) => sum + num(a.downloads), 0);
+const trafficOf = (repo, series) =>
+  Object.values(obj(obj(repo.traffic)[series])).reduce((sum, d) => sum + num(d.count), 0);
+
+// --- rendering ------------------------------------------------------------------------
+
+function profilePanel(data) {
+  const p = obj(data.profile);
+  const facts = [
+    p.location && `📍 ${p.location}`,
+    p.company && `🏢 ${p.company}`,
+    p.created_at && `🗓 joined ${when(p.created_at).split(",")[0]}`,
+    p.followers != null && `${fmt(p.followers)} followers`,
+    p.following != null && `following ${fmt(p.following)}`,
+  ].filter(Boolean);
+
+  return el("header", { className: "profile panel" },
+    p.avatar_url ? el("img", { src: p.avatar_url, alt: "", loading: "lazy" }) : null,
+    el("div", {},
+      el("h1", {}, p.display_name || p.username || data.account || "Account"),
+      el("div", { className: "sub" },
+        p.profile_url
+          ? el("a", { href: p.profile_url, target: "_blank", rel: "noreferrer" }, p.username || data.account)
+          : (p.username || data.account || ""),
+        ` · ${data.platform || ""}`,
+        p.blog ? el("span", {}, " · ", el("a", { href: p.blog, target: "_blank", rel: "noreferrer" }, p.blog)) : null,
+      ),
+      p.bio ? el("p", { className: "bio" }, p.bio) : null,
+      el("div", { className: "chips" }, facts.map((f) => el("span", { className: "chip" }, f))),
+    ),
+  );
+}
+
+function tiles(data) {
+  const repos = allRepos(data);
+  const releases = repos.flatMap((r) => list(r.releases));
+  const assets = repos.flatMap(assetsOf);
+  const entries = [
+    ["Repositories", repos.length],
+    ["Stars", repos.reduce((s, r) => s + num(r.stars), 0)],
+    ["Forks", repos.reduce((s, r) => s + num(r.forks), 0)],
+    ["Watchers", repos.reduce((s, r) => s + num(r.watchers), 0)],
+    ["Organisations", list(data.orgs).length],
+    ["Releases", releases.length],
+    ["Assets", assets.length],
+    ["Downloads", assets.reduce((s, a) => s + num(a.downloads), 0)],
+    ["Open issues", repos.reduce((s, r) => s + list(r.issues).length, 0)],
+    ["Open PRs", repos.reduce((s, r) => s + list(r.prs).length, 0)],
+    ["Security alerts", repos.reduce((s, r) => s + list(r.security_alerts).length, 0)],
+    ["Gists / pastes", list(data.pastes).length],
+    ["Packages", list(data.packages).length],
+    ["Views", repos.reduce((s, r) => s + trafficOf(r, "views"), 0)],
+    ["Clones", repos.reduce((s, r) => s + trafficOf(r, "clones"), 0)],
+    ["Sponsors", num(data.sponsors_count)],
+  ];
+  return el("div", { className: "tiles" },
+    entries.map(([k, v]) =>
+      el("div", { className: "tile" }, el("div", { className: "v" }, fmt(v)), el("div", { className: "k" }, k))
+    ),
+  );
+}
+
+function metadataTable(data) {
+  const rows = [
+    ["Snapshot taken", `${when(data.fetched_at)} (${ago(data.fetched_at)})`],
+    ["Account", data.account || "—"],
+    ["Platform", data.platform || "—"],
+    ["Status", data.raw_status || "—"],
+    ["Rate limit remaining", data.rate_limit_remaining != null ? fmt(data.rate_limit_remaining) : "—"],
+    ["Rate limit resets", data.rate_limit_reset ? when(new Date(num(data.rate_limit_reset) * 1000).toISOString()) : "—"],
+    ["Collected resources", list(data.collected).join(", ") || "—"],
+    ["Snapshot URL", data.json_url || "—"],
+  ];
+  return card("Snapshot metadata",
+    el("table", {},
+      el("tbody", {}, rows.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, String(v))))),
+    ),
+  );
+}
+
+function resourcesTable(data) {
+  const resources = obj(data.resources);
+  const keys = Object.keys(resources).sort();
+  if (!keys.length) return card("Resource schedule", null);
+  return card("Resource schedule",
+    el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Resource"), el("th", {}, "Last fetched"),
+        el("th", { className: "n" }, "Next due"), el("th", { className: "n" }, "Cost"),
+        el("th", { className: "n" }, "Failures"),
+      )),
+      el("tbody", {}, keys.map((k) => {
+        const r = obj(resources[k]);
+        return el("tr", {},
+          el("td", { className: "name" }, k),
+          el("td", { className: "dim" }, ago(r.fetched_at) || "—"),
+          el("td", { className: "n" }, r.next_due_in != null ? `${Math.round(num(r.next_due_in))}s` : "—"),
+          el("td", { className: "n" }, r.cost != null ? fmt(r.cost) : "—"),
+          el("td", { className: "n" }, fmt(r.failures)),
+        );
+      })),
+    ),
+  );
+}
+
+function card(title, body) {
+  return el("section", { className: "tablecard" },
+    el("h3", {}, title),
+    body ? el("div", { className: "scroll" }, body) : el("div", { className: "empty" }, "Nothing recorded yet."),
+  );
+}
+
+/**
+ * One leaderboard. `rows` is already whatever shape `columns` expects; anything scoring
+ * zero is dropped, because a "top 25" padded out with zeroes says nothing.
+ */
+function leaderboard(title, rows, score, columns) {
+  const ranked = rows
+    .map((row) => [row, num(score(row))])
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, TOP_N);
+
+  if (!ranked.length) return card(title, null);
+
+  return card(title,
+    el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "#"),
+        columns.map((c) => el("th", { className: c.numeric ? "n" : "" }, c.label)),
+      )),
+      el("tbody", {}, ranked.map(([row, value], i) =>
+        el("tr", {},
+          el("td", { className: "rank" }, String(i + 1)),
+          columns.map((c) => el("td", { className: c.numeric ? "n" : "" }, c.cell(row, value))),
+        ),
+      )),
+    ),
+  );
+}
+
+const repoCell = {
+  label: "Repository",
+  cell: (r) => el("span", {},
+    r.url ? el("a", { href: r.url, target: "_blank", rel: "noreferrer", className: "name" }, r.full_name || r.name)
+          : el("span", { className: "name" }, r.full_name || r.name || "—"),
+    r._org ? el("span", { className: "dim" }, ` · ${r._org}`) : null,
+  ),
+};
+const valueCell = (label) => ({ label, numeric: true, cell: (_r, v) => fmt(v) });
+
+function boards(data) {
+  const repos = allRepos(data);
+  const orgs = list(data.orgs);
+  const releases = repos.flatMap((r) => list(r.releases).map((rel) => ({ ...rel, _repo: r })));
+  const assets = repos.flatMap((r) =>
+    list(r.releases).flatMap((rel) => list(rel.assets).map((a) => ({ ...a, _repo: r, _tag: rel.tag })))
+  );
+
+  const referrers = {};
+  for (const r of repos) {
+    for (const [site, entry] of Object.entries(obj(obj(r.traffic).referrers))) {
+      referrers[site] = (referrers[site] || 0) + num(entry.count);
+    }
+  }
+
+  const releaseCell = {
+    label: "Release",
+    cell: (rel) => el("span", {},
+      el("span", { className: "name" }, rel.tag || rel.name || "—"),
+      el("span", { className: "dim" }, ` · ${rel._repo.full_name || ""}`),
+    ),
+  };
+
+  return [
+    leaderboard(`Top ${TOP_N} repositories by stars`, repos, (r) => r.stars, [repoCell, valueCell("Stars")]),
+    leaderboard(`Top ${TOP_N} repositories by downloads`, repos, downloadsOf, [repoCell, valueCell("Downloads")]),
+    leaderboard(`Top ${TOP_N} repositories by release count`, repos, (r) => list(r.releases).length, [repoCell, valueCell("Releases")]),
+    leaderboard(`Top ${TOP_N} repositories by asset count`, repos, (r) => assetsOf(r).length, [repoCell, valueCell("Assets")]),
+    leaderboard(`Top ${TOP_N} repositories by forks`, repos, (r) => r.forks, [repoCell, valueCell("Forks")]),
+    leaderboard(`Top ${TOP_N} repositories by watchers`, repos, (r) => r.watchers, [repoCell, valueCell("Watchers")]),
+    leaderboard(`Top ${TOP_N} organisations by repository count`, orgs, (o) => list(o.repos).length, [
+      {
+        label: "Organisation",
+        cell: (o) => el("span", {},
+          o.url ? el("a", { href: o.url, target: "_blank", rel: "noreferrer", className: "name" }, o.display_name || o.name)
+                : el("span", { className: "name" }, o.display_name || o.name || "—"),
+          o.is_owned ? el("span", { className: "dim" }, " · owned") : null,
+        ),
+      },
+      valueCell("Repositories"),
+    ]),
+    leaderboard(`Top ${TOP_N} organisations by stars`, orgs, (o) => list(o.repos).reduce((s, r) => s + num(r.stars), 0), [
+      { label: "Organisation", cell: (o) => el("span", { className: "name" }, o.display_name || o.name || "—") },
+      valueCell("Stars"),
+    ]),
+    leaderboard(`Top ${TOP_N} repositories by open issues`, repos, (r) => list(r.issues).length, [repoCell, valueCell("Issues")]),
+    leaderboard(`Top ${TOP_N} repositories by open pull requests`, repos, (r) => list(r.prs).length, [repoCell, valueCell("PRs")]),
+    leaderboard(`Top ${TOP_N} repositories by security alerts`, repos, (r) => list(r.security_alerts).length, [repoCell, valueCell("Alerts")]),
+    leaderboard(`Top ${TOP_N} releases by downloads`, releases,
+      (rel) => list(rel.assets).reduce((s, a) => s + num(a.downloads), 0), [releaseCell, valueCell("Downloads")]),
+    leaderboard(`Top ${TOP_N} assets by downloads`, assets, (a) => a.downloads, [
+      {
+        label: "Asset",
+        cell: (a) => el("span", {},
+          el("span", { className: "name" }, a.name || "—"),
+          el("span", { className: "dim" }, ` · ${a._repo.full_name || ""} · ${a._tag || ""}`),
+        ),
+      },
+      valueCell("Downloads"),
+    ]),
+    leaderboard(`Top ${TOP_N} repositories by views`, repos, (r) => trafficOf(r, "views"), [repoCell, valueCell("Views")]),
+    leaderboard(`Top ${TOP_N} repositories by clones`, repos, (r) => trafficOf(r, "clones"), [repoCell, valueCell("Clones")]),
+    leaderboard(`Top ${TOP_N} referring sites`, Object.entries(referrers).map(([site, count]) => ({ site, count })),
+      (r) => r.count, [
+        { label: "Referrer", cell: (r) => el("span", { className: "name" }, r.site) },
+        valueCell("Visits"),
+      ]),
+    leaderboard(`Top ${TOP_N} packages by downloads`, list(data.packages),
+      (p) => num(p.downloads_total) + num(p.pull_count), [
+        { label: "Package", cell: (p) => el("span", { className: "name" }, p.name || "—") },
+        valueCell("Downloads"),
+      ]),
+    leaderboard(`Top ${TOP_N} gists by comments`, list(data.pastes), (p) => p.comments_count, [
+      { label: "Gist", cell: (p) => el("span", { className: "name" }, p.title || p.paste_id || "—") },
+      valueCell("Comments"),
+    ]),
+  ];
+}
+
+function render(data) {
+  const app = $("#app");
+  app.replaceChildren(
+    profilePanel(data),
+    tiles(data),
+    el("h2", {}, "Metadata"),
+    el("div", { className: "grid2" }, metadataTable(data), resourcesTable(data)),
+    el("h2", {}, "Leaderboards"),
+    el("div", { className: "grid2" }, boards(data)),
+  );
+  $("#footer").textContent =
+    `${allRepos(data).length} repositories read from ${data.json_url || "the snapshot"}.`;
+}
+
+async function show(slug) {
+  for (const button of document.querySelectorAll("nav.accounts button")) {
+    button.setAttribute("aria-current", String(button.dataset.slug === slug));
+  }
+  $("#app").replaceChildren(el("p", { className: "status" }, `Loading ${slug}…`));
+  try {
+    // Cache-busted: the snapshot is rewritten every poll and a stale page is worse than a
+    // slow one, especially behind Home Assistant's own long static-asset caching.
+    const response = await fetch(`./${encodeURIComponent(slug)}.json?t=${Date.now()}`);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    render(await response.json());
+  } catch (err) {
+    $("#app").replaceChildren(
+      el("p", { className: "status error" }, `Could not load ${slug}.json — ${err.message}`),
+    );
+  }
+}
+
+function start() {
+  if (!ACCOUNTS.length) {
+    $("#app").replaceChildren(el("p", { className: "status" }, "No account snapshots in this directory yet."));
+    return;
+  }
+  const nav = $("#accounts");
+  if (ACCOUNTS.length > 1) {
+    nav.hidden = false;
+    nav.replaceChildren(...ACCOUNTS.map((slug) =>
+      el("button", { type: "button", dataset: { slug }, onclick: () => show(slug) }, slug)
+    ));
+  }
+  const wanted = new URLSearchParams(location.search).get("account");
+  show(ACCOUNTS.includes(wanted) ? wanted : ACCOUNTS[0]);
+}
+
+start();
+</script>
+</body>
+</html>

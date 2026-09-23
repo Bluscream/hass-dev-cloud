@@ -37,6 +37,14 @@ WWW_SUBDIR = "dev"
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^a-z0-9._-]+")
 
+# The browsable index written beside the snapshots in each platform directory. Shipped as a
+# real .html asset rather than a Python string: it is a page, editable and viewable as one,
+# and a 400-line heredoc in this module would be neither.
+_INDEX_TEMPLATE = Path(__file__).parent / "www" / "index.html"
+_INDEX_NAME = "index.html"
+#: Replaced with the JSON array of account slugs found in the directory.
+_ACCOUNTS_PLACEHOLDER = "__ACCOUNTS__"
+
 # `/local` is served without authentication, so this file is readable by anyone who can
 # reach Home Assistant. No provider puts a credential in the snapshot today, but `extra`
 # dicts pass provider payloads through verbatim — one future field named `token` would be
@@ -203,6 +211,52 @@ async def async_write_snapshot(
         _LOGGER.warning(
             "Could not write JSON cache for %s:%s to %s: %s", platform, account, path, err
         )
+        return False
+    return True
+
+
+def _account_slugs(directory: Path) -> list[str]:
+    """Account snapshots sitting in one platform directory.
+
+    Leading-dot names are skipped: `_write_json` stages every write through a `.tmp-*.json`
+    sibling, and pathlib's glob — unlike a shell's — happily matches those.
+    """
+    return sorted(
+        path.stem
+        for path in directory.glob("*.json")
+        if not path.name.startswith(".") and path.stem != "accounts"
+    )
+
+
+def _write_index(directory: Path) -> None:
+    """Refresh a platform's index page. Runs in an executor — never call from the loop."""
+    page = _INDEX_TEMPLATE.read_text(encoding="utf-8").replace(
+        _ACCOUNTS_PLACEHOLDER, json.dumps(_account_slugs(directory))
+    )
+    target = directory / _INDEX_NAME
+
+    # Only rewritten when it would actually differ. The page is static apart from the
+    # account list, so writing it on every poll would churn the disk and bust every
+    # browser cache to produce a byte-identical file.
+    with contextlib.suppress(OSError):
+        if target.read_text(encoding="utf-8") == page:
+            return
+
+    directory.mkdir(parents=True, exist_ok=True)
+    target.write_text(page, encoding="utf-8")
+
+
+async def async_write_index(hass: HomeAssistant, platform: str) -> bool:
+    """Write the browsable index for one platform. Returns whether it succeeded.
+
+    Never raises: like the snapshot dump, a page that failed to render must not fail a poll.
+    """
+    directory = _build_json_path(hass, platform, "unused").parent
+    try:
+        await hass.async_add_executor_job(_write_index, directory)
+    except Exception as err:
+        # Broad by design: this is a convenience page, not part of the data path.
+        _LOGGER.warning("Could not write the index page for %s in %s: %s", platform, directory, err)
         return False
     return True
 
