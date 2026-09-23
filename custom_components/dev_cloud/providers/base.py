@@ -157,6 +157,13 @@ class BaseDevCloudProvider(ABC):
             if value:
                 self._resource_values[key] = value
 
+        # Sponsorships expose only totals, so there is no list whose presence implies the
+        # resource was collected. Same hole as running_jobs below: without this the resource
+        # is absent after a reload, its sensor is never registered, and Home Assistant
+        # reports the entity as no longer provided.
+        if data.sponsors_count is not None or data.sponsoring_count is not None:
+            self._resource_values["sponsors"] = (data.sponsors_count, data.sponsoring_count)
+
         # running_jobs is stored as the (count, jobs) tuple its fetcher returns. It has to
         # come back on restore or the resource stays absent from `collected_resources()`,
         # its sensor is never registered, and Home Assistant reports the entity as no

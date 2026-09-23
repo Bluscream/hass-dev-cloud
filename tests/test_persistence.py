@@ -9,7 +9,14 @@ from typing import Any
 import aiohttp
 import pytest
 from dev_cloud import storage
-from dev_cloud.models import DevCloudData, OrgData, ProfileData, RepoData
+from dev_cloud.models import (
+    DevCloudData,
+    NotificationData,
+    OrgData,
+    PasteData,
+    ProfileData,
+    RepoData,
+)
 from dev_cloud.providers import get_provider
 from dev_cloud.providers.scheduling import ResourcePolicy, ResourceScheduler
 
@@ -200,3 +207,38 @@ def test_a_resource_never_fetched_is_absent_from_the_schedule() -> None:
         policies={"repos": ResourcePolicy(authenticated=900, anonymous=900)}, has_token=True
     )
     assert sched.persisted_state() == {}
+
+
+async def test_every_declared_github_resource_survives_a_reload(provider: Any) -> None:
+    """Closes the bug class rather than one more instance of it.
+
+    Running Jobs vanished after every reload because its resource was absent from restore();
+    Sponsors had exactly the same hole and was found only by watching a live deploy. Both
+    share a shape: a resource whose value is a scalar or a tuple, with no list beside it
+    whose presence would imply it had been collected. Anything added to resource_policies
+    from now on has to be restorable or this fails.
+    """
+    repo = _repo_with_releases()
+    repo.issues = [{"number": 1, "title": "i"}]
+    repo.prs = [{"number": 2, "title": "p"}]
+    repo.traffic = {"views": {"2026-09-22": {"count": 4, "uniques": 2}}}
+
+    org_repo = RepoData(name="x", full_name="Org/x", url="u")
+    org_repo.releases = [{"tag": "v1", "assets": []}]
+
+    data = DevCloudData(
+        profile=ProfileData(username="Bluscream"),
+        repos=[repo],
+        orgs=[OrgData(name="Org", is_owned=True, repos=[org_repo])],
+        pastes=[PasteData(paste_id="g1")],
+        notifications=[NotificationData(notification_id="n1", title="t")],
+        sponsors_count=3,
+        sponsoring_count=1,
+        running_jobs_count=0,
+        running_jobs=[],
+    )
+    provider.restore(storage.build_snapshot("github", "Bluscream", data))
+
+    declared = set(type(provider).resource_policies)
+    missing = declared - provider.collected_resources()
+    assert not missing, f"not rebuilt by restore(): {sorted(missing)}"
