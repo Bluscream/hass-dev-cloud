@@ -63,6 +63,19 @@ _RELEASE_WATCHED = ("name", "tag", "published_at")
 _PACKAGE_WATCHED = ("version",)
 
 
+_BULKY_REPO_KEYS = frozenset({"releases", "branches", "tags", "issues", "prs", "security_alerts"})
+
+
+def _prune_repo(repo: Item) -> Item:
+    """Return a lightweight copy of a repository dict with bulky collections removed.
+
+    Home Assistant's recorder limits event data to 32,768 bytes. Repositories with
+    many releases, assets, branches, tags, issues, or PRs exceed this limit if the
+    full nested snapshot is passed directly into event payloads.
+    """
+    return {k: v for k, v in repo.items() if k not in _BULKY_REPO_KEYS}
+
+
 def _by(items: list[Item] | None, key: str) -> dict[str, Item]:
     """Index a list of serialised items by one of their fields."""
     return {str(i[key]): i for i in items or [] if isinstance(i, dict) and i.get(key) is not None}
@@ -151,7 +164,8 @@ def _repo_changes(previous: Item, current: Item) -> list[Event]:
 def _one_repo(name: str, old: Item, new: Item) -> list[Event]:
     """Changes within a single repository, from the headline down to its refs."""
     events: list[Event] = []
-    common = {"repository": name, "old": old, "new": new}
+    pruned_old, pruned_new = _prune_repo(old), _prune_repo(new)
+    common = {"repository": name, "old": pruned_old, "new": pruned_new}
 
     if old.get("stars") != new.get("stars"):
         events.append(

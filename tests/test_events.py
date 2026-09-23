@@ -107,11 +107,15 @@ def test_a_removed_repository_carries_its_last_known_state() -> None:
 
 def test_a_star_change_carries_old_new_and_a_signed_delta() -> None:
     result = events.changes(
-        _snap(repos=[_repo("o/a", stars=41)]), _snap(repos=[_repo("o/a", stars=42)])
+        _snap(repos=[_repo("o/a", stars=41, releases=("v1",), branches=("b",))]),
+        _snap(repos=[_repo("o/a", stars=42, releases=("v1",), branches=("b",))]),
     )
     payload = _first(result, EVENT_STARS_CHANGED)
     assert (payload["previous_stars"], payload["stars"], payload["delta"]) == (41, 42, 1)
     assert payload["old"]["stars"] == 41 and payload["new"]["stars"] == 42
+    # Bulky nested collections are pruned from old/new to protect HA recorder's 32KB limit
+    assert "releases" not in payload["old"] and "branches" not in payload["old"]
+    assert "releases" not in payload["new"] and "branches" not in payload["new"]
 
 
 def test_losing_a_star_reports_a_negative_delta() -> None:
