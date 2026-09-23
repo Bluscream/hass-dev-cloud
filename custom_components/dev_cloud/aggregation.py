@@ -140,7 +140,7 @@ def compute_totals(coordinator: DevCloudCoordinator) -> Totals:
         private_repositories=sum(1 for r in repos if r.is_private),
         stars=sum(r.stars for r in counted) + sum(p.star_count or 0 for p in data.packages),
         forks=sum(r.forks for r in counted),
-        watchers=sum(r.watchers for r in counted),
+        watchers=sum(r.watchers or 0 for r in counted),
         releases=len(releases),
         assets=len(all_assets),
         downloads=sum(int(a.get("downloads", 0) or 0) for a in all_assets),

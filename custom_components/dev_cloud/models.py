@@ -61,7 +61,12 @@ class RepoData:
     is_archived: bool = False
     stars: int = 0
     forks: int = 0
-    watchers: int = 0
+    # None means the detail walk has not covered this repository, which is a different
+    # thing from a measured zero. The writer prunes None, so the field is simply absent
+    # from the snapshot and the diff can tell the two apart - stored as 0 they were
+    # indistinguishable, and a skipped walk read as 266 repositories losing their
+    # watchers and then gaining them back on the next poll.
+    watchers: int | None = None
     open_issues: int = 0
     primary_language: str | None = None
     default_branch: str | None = None

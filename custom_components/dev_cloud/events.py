@@ -332,7 +332,10 @@ def _one_repo(name: str, old: Item, new: Item) -> list[Change]:
     detail_both = _has_detail(old) and _has_detail(new)
 
     for metric, thing in _REPO_METRICS:
-        if metric in _DETAIL_METRICS and not detail_both:
+        # Both the walk having run and the figure actually being present. An absent key is
+        # the writer having pruned a None, which is this repository never having been
+        # measured - not a measurement of zero.
+        if metric in _DETAIL_METRICS and not (detail_both and metric in old and metric in new):
             continue
         before, after = old.get(metric, 0), new.get(metric, 0)
         if before == after:

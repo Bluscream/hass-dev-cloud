@@ -707,3 +707,36 @@ def test_traffic_is_compared_even_where_the_detail_walk_has_never_been() -> None
     after = _repo_with_traffic("o/a", views={"2026-09-21": 10, "2026-09-22": 4})
 
     assert _one(events.diff(_snap(repos=[before]), _snap(repos=[after])), "new_views")["delta"] == 4
+
+
+def test_an_absent_watcher_count_is_not_a_measured_zero() -> None:
+    """The distinction the whole guard rests on.
+
+    The writer prunes None, so a repository the detail walk never covered has no watchers
+    key at all. Stored as 0 the two were indistinguishable, and every walk that ran after a
+    reload read the difference as real.
+    """
+    unmeasured = _repo("o/a", branches=("main",))
+    assert unmeasured.watchers is None, "the model default must be unmeasured, not zero"
+
+    result = events.diff(
+        _snap(repos=[unmeasured]),
+        _snap(repos=[_repo("o/a", branches=("main",), watchers=5)]),
+    )
+    assert "watchers_changed" not in _kinds(result)
+
+
+def test_a_measured_zero_going_up_is_a_genuine_first_watcher() -> None:
+    """And the other half: once it has actually been measured, zero means zero."""
+    result = events.diff(
+        _snap(repos=[_repo("o/a", branches=("main",), watchers=0)]),
+        _snap(repos=[_repo("o/a", branches=("main",), watchers=5)]),
+    )
+    change = _one(result, "watchers_changed")
+    assert (change["old"], change["new"], change["first"]) == (0, 5, True)
+
+
+def test_a_measured_zero_is_written_to_the_snapshot() -> None:
+    """If pruning dropped it, a measured zero would read back as unmeasured next poll."""
+    snapshot = _snap(repos=[_repo("o/a", branches=("main",), watchers=0)])
+    assert "watchers" in snapshot["repos"][0]
