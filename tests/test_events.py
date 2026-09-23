@@ -740,3 +740,28 @@ def test_a_measured_zero_is_written_to_the_snapshot() -> None:
     """If pruning dropped it, a measured zero would read back as unmeasured next poll."""
     snapshot = _snap(repos=[_repo("o/a", branches=("main",), watchers=0)])
     assert "watchers" in snapshot["repos"][0]
+
+
+def test_advisories_appearing_account_wide_are_the_walk_arriving() -> None:
+    """871 advisories do not get published in the same ten minutes.
+
+    Unlike a watcher count, an empty advisory list and one nobody fetched are written to
+    the snapshot identically, so no single repository can tell them apart - the account as
+    a whole can. This is the mirror of the rule that a collection emptying entirely is a
+    failed fetch rather than a mass deletion.
+    """
+    before = [_repo("o/a", branches=("main",)), _repo("o/b", branches=("main",))]
+    after = [_repo_with_alerts("o/a", (1, 2, 3)), _repo_with_alerts("o/b", (4, 5))]
+    for repo in after:
+        repo.branches = [{"name": "main", "sha": "s"}]
+
+    assert "new_security_alert" not in _kinds(events.diff(_snap(repos=before), _snap(repos=after)))
+
+
+def test_a_new_advisory_is_announced_once_the_account_has_any() -> None:
+    """The guard must not make the account permanently silent about advisories."""
+    before = [_repo_with_alerts("o/a", (1,)), _repo("o/b", branches=("main",))]
+    after = [_repo_with_alerts("o/a", (1, 2)), _repo("o/b", branches=("main",))]
+
+    change = _one(events.diff(_snap(repos=before), _snap(repos=after)), "new_security_alert")
+    assert change["subject"] == "GHSA-2"

@@ -312,13 +312,21 @@ def _repo_changes(previous: Item, current: Item) -> list[Change]:
         for name in sorted(was.keys() - now.keys())
     ]
 
+    # Whether the account had *any* advisory at all last time. An advisory list that was
+    # empty across every repository and is now populated is the walk arriving, not hundreds
+    # of advisories being published at once - and unlike a watcher count, an empty list and
+    # a list nobody fetched are written to the snapshot identically, so nothing about one
+    # repository can tell them apart. This is the same rule as a collection that emptied
+    # entirely being read as a failed fetch, pointed the other way.
+    alerts_known = any(repo.get("security_alerts") for repo in was.values())
+
     for name in sorted(now.keys() & was.keys()):
-        changes += _one_repo(name, was[name], now[name])
+        changes += _one_repo(name, was[name], now[name], alerts_known=alerts_known)
 
     return changes
 
 
-def _one_repo(name: str, old: Item, new: Item) -> list[Change]:
+def _one_repo(name: str, old: Item, new: Item, *, alerts_known: bool = True) -> list[Change]:
     """Changes within a single repository, from the headline down to its refs."""
     url = str(new.get("url") or old.get("url") or "")
     changes: list[Change] = []
@@ -406,7 +414,7 @@ def _one_repo(name: str, old: Item, new: Item) -> list[Change]:
 
     if detail_both:
         changes += _release_changes(name, old, new)
-        changes += _security_changes(name, old, new)
+        changes += _security_changes(name, old, new, alerts_known=alerts_known)
         changes += _download_changes(name, old, new)
         changes += _ref_changes(name, old, new, "branches", THING_BRANCH, "branch")
         changes += _ref_changes(name, old, new, "tags", THING_TAG, "tag")
@@ -466,7 +474,9 @@ def _release_changes(repository: str, old: Item, new: Item) -> list[Change]:
     return changes
 
 
-def _security_changes(repository: str, old: Item, new: Item) -> list[Change]:
+def _security_changes(
+    repository: str, old: Item, new: Item, *, alerts_known: bool = True
+) -> list[Change]:
     """New vulnerability alerts one by one; resolutions batched.
 
     A new alert is something to act on, so each gets its own line with the advisory
@@ -476,6 +486,17 @@ def _security_changes(repository: str, old: Item, new: Item) -> list[Change]:
     was = _by(old.get("security_alerts"), "number")
     now = _by(new.get("security_alerts"), "number")
     if not was and not now:
+        return []
+
+    # The account had no advisories anywhere last poll, so there is no way to tell one that
+    # was just published from one that has been open for a year and is only now visible.
+    # Announcing 871 of them at once is the wrong guess in every case but the first.
+    if not alerts_known:
+        _LOGGER.debug(
+            "Advisories appeared for %s with none known account-wide; "
+            "treating as the walk arriving rather than as new advisories",
+            repository,
+        )
         return []
 
     changes: list[Change] = [
