@@ -73,7 +73,7 @@ RELEASE_FIELDS = """
   url
   releaseAssets(first: $nested) {
     pageInfo { hasNextPage endCursor }
-    nodes { name downloadCount }
+    nodes { name downloadCount downloadUrl }
   }
 """
 
@@ -154,7 +154,7 @@ query($id: ID!, $cursor: String, $size: Int!) {
     ... on Release {
       releaseAssets(first: $size, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { name downloadCount }
+        nodes { name downloadCount downloadUrl }
       }
     }
   }

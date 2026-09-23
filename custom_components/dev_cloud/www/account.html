@@ -361,15 +361,57 @@ function leaderboard(title, rows, score, columns) {
  * organisation whose name is not its path prefix, which is where the extra word is the only
  * thing telling you where the row came from.
  */
+/** An anchor when there is somewhere to go, plain text when there is not. */
+function linked(href, text, className = "name") {
+  return href
+    ? el("a", { href, target: "_blank", rel: "noreferrer", className }, text)
+    : el("span", { className }, text);
+}
+
+/** First labels that mark a reverse-DNS application identifier rather than a hostname. */
+const REVERSE_DNS_LABELS = new Set(["com", "org", "net", "io", "app", "dev", "me", "co"]);
+
+/**
+ * Whether a referrer is somewhere you could actually visit.
+ *
+ * GitHub reports these as a mixture of hostnames and product names — "github.com" and
+ * "Google" arrive in the same list — so anything with a dot and no whitespace is treated as
+ * a host and the rest is left as plain text. Guessing a URL for "Google" would send you
+ * somewhere nobody asked to go.
+ */
+function asHost(name) {
+  if (!/^[^\s]+\.[^\s]+$/.test(name)) return null;
+  // Mobile apps report their own identifier as the referrer. "com.reddit.frontpage" passes
+  // any dots-and-no-spaces test and resolves to nothing at all; a real host essentially
+  // never begins with a bare TLD label, which is what reverse-DNS identifiers do.
+  if (REVERSE_DNS_LABELS.has(name.split(".")[0].toLowerCase())) return null;
+  return `https://${name}`;
+}
+
+/** An absolute URL for a site-relative traffic path, resolved against its repository. */
+function pathUrl(path, repoUrl) {
+  try {
+    return new URL(path, repoUrl).href;
+  } catch {
+    return null;
+  }
+}
+
+const orgCell = {
+  label: "Organisation",
+  cell: (o) => el("span", {},
+    linked(o.url, o.display_name || o.name || "—"),
+    o.is_owned ? el("span", { className: "dim" }, " · owned") : null,
+  ),
+};
+
 const repoCell = {
   label: "Repository",
   cell: (r) => {
     const path = r.full_name || r.name || "—";
     const elsewhere = r._org && !String(path).startsWith(`${r._org}/`);
     return el("span", {},
-      r.url
-        ? el("a", { href: r.url, target: "_blank", rel: "noreferrer", className: "name" }, path)
-        : el("span", { className: "name" }, path),
+      linked(r.url, path),
       elsewhere ? el("span", { className: "dim" }, ` · ${r._org}`) : null,
     );
   },
@@ -639,7 +681,9 @@ function boards(data) {
   const orgs = list(data.orgs);
   const releases = repos.flatMap((r) => list(r.releases).map((rel) => ({ ...rel, _repo: r })));
   const assets = repos.flatMap((r) =>
-    list(r.releases).flatMap((rel) => list(rel.assets).map((a) => ({ ...a, _repo: r, _tag: rel.tag }))),
+    list(r.releases).flatMap((rel) =>
+      list(rel.assets).map((a) => ({ ...a, _repo: r, _tag: rel.tag, _release: rel.url })),
+    ),
   );
 
   const referrers = {};
@@ -648,18 +692,23 @@ function boards(data) {
       referrers[site] = (referrers[site] || 0) + num(entry.count);
     }
   }
+  // Paths are site-relative ("/owner/repo/actions"), so the repository they came from is
+  // kept alongside to resolve them against. The title is GitHub's own label for the page.
   const paths = {};
   for (const r of repos) {
     for (const [path, entry] of Object.entries(obj(obj(r.traffic).paths))) {
-      paths[path] = (paths[path] || 0) + num(entry.count);
+      const into = paths[path] || (paths[path] = { path, count: 0, repo: r, title: entry.title });
+      into.count += num(entry.count);
+      into.title = into.title || entry.title;
     }
   }
 
   const releaseCell = {
     label: "Release",
     cell: (rel) => el("span", {},
-      el("span", { className: "name" }, rel.tag || rel.name || "—"),
-      el("span", { className: "dim" }, ` · ${rel._repo.full_name || ""}`),
+      linked(rel.url, rel.tag || rel.name || "—"),
+      el("span", { className: "dim" }, " · "),
+      linked(rel._repo.url, rel._repo.full_name || "", "dim"),
     ),
   };
 
@@ -670,22 +719,10 @@ function boards(data) {
     leaderboard(`Top ${TOP_N} repositories by asset count`, repos, (r) => assetsOf(r).length, [repoCell, valueCell("Assets")]),
     leaderboard(`Top ${TOP_N} repositories by forks`, repos, (r) => r.forks, [repoCell, valueCell("Forks")]),
     leaderboard(`Top ${TOP_N} repositories by watchers`, repos, (r) => r.watchers, [repoCell, valueCell("Watchers")]),
-    leaderboard(`Top ${TOP_N} organisations by repository count`, orgs, (o) => list(o.repos).length, [
-      {
-        label: "Organisation",
-        cell: (o) => el("span", {},
-          o.url ? el("a", { href: o.url, target: "_blank", rel: "noreferrer", className: "name" }, o.display_name || o.name)
-                : el("span", { className: "name" }, o.display_name || o.name || "—"),
-          o.is_owned ? el("span", { className: "dim" }, " · owned") : null,
-        ),
-      },
-      valueCell("Repositories"),
-    ]),
+    leaderboard(`Top ${TOP_N} organisations by repository count`, orgs,
+      (o) => list(o.repos).length, [orgCell, valueCell("Repositories")]),
     leaderboard(`Top ${TOP_N} organisations by stars`, orgs,
-      (o) => list(o.repos).reduce((s, r) => s + num(r.stars), 0), [
-        { label: "Organisation", cell: (o) => el("span", { className: "name" }, o.display_name || o.name || "—") },
-        valueCell("Stars"),
-      ]),
+      (o) => list(o.repos).reduce((s, r) => s + num(r.stars), 0), [orgCell, valueCell("Stars")]),
     leaderboard(`Top ${TOP_N} repositories by open issues`, repos, (r) => list(r.issues).length, [repoCell, valueCell("Issues")]),
     leaderboard(`Top ${TOP_N} repositories by open pull requests`, repos, (r) => list(r.prs).length, [repoCell, valueCell("PRs")]),
     leaderboard(`Top ${TOP_N} repositories by security alerts`, repos, (r) => list(r.security_alerts).length, [repoCell, valueCell("Alerts")]),
@@ -694,32 +731,48 @@ function boards(data) {
     leaderboard(`Top ${TOP_N} assets by downloads`, assets, (a) => a.downloads, [
       {
         label: "Asset",
+        // The download URL when the walk carried one, the release page otherwise: detail
+        // cached before that field existed has no URL, and a dead guess is worse than a
+        // live detour.
         cell: (a) => el("span", {},
-          el("span", { className: "name" }, a.name || "—"),
-          el("span", { className: "dim" }, ` · ${a._repo.full_name || ""} · ${a._tag || ""}`),
+          linked(a.url || a._release, a.name || "—"),
+          el("span", { className: "dim" }, " · "),
+          linked(a._repo.url, a._repo.full_name || "", "dim"),
+          el("span", { className: "dim" }, ` · ${a._tag || ""}`),
         ),
       },
       valueCell("Downloads"),
     ]),
     leaderboard(`Top ${TOP_N} repositories by views`, repos, (r) => trafficOf(r, "views"), [repoCell, valueCell("Views")]),
     leaderboard(`Top ${TOP_N} repositories by clones`, repos, (r) => trafficOf(r, "clones"), [repoCell, valueCell("Clones")]),
-    leaderboard(`Top ${TOP_N} referring sites`, Object.entries(referrers).map(([site, count]) => ({ site, count })),
-      (r) => r.count, [
-        { label: "Referrer", cell: (r) => el("span", { className: "name" }, r.site) },
+    leaderboard(`Top ${TOP_N} referring sites`,
+      Object.entries(referrers).map(([site, count]) => ({ site, count })), (r) => r.count, [
+        { label: "Referrer", cell: (r) => linked(asHost(r.site), r.site) },
         valueCell("Visits"),
       ]),
-    leaderboard(`Top ${TOP_N} popular paths`, Object.entries(paths).map(([path, count]) => ({ path, count })),
-      (r) => r.count, [
-        { label: "Path", cell: (r) => el("span", { className: "name" }, r.path) },
-        valueCell("Views"),
-      ]),
+    leaderboard(`Top ${TOP_N} popular paths`, Object.values(paths), (r) => r.count, [
+      {
+        label: "Path",
+        cell: (r) => el("span", {},
+          linked(pathUrl(r.path, r.repo.url), r.path),
+          r.title ? el("span", { className: "dim" }, ` · ${r.title}`) : null,
+        ),
+      },
+      valueCell("Views"),
+    ]),
     leaderboard(`Top ${TOP_N} packages by downloads`, list(data.packages),
       (p) => num(p.downloads_total) + num(p.pull_count), [
-        { label: "Package", cell: (p) => el("span", { className: "name" }, p.name || "—") },
+        { label: "Package", cell: (p) => linked(p.url, p.name || "—") },
         valueCell("Downloads"),
       ]),
     leaderboard(`Top ${TOP_N} gists by comments`, list(data.pastes), (p) => p.comments_count, [
-      { label: "Gist", cell: (p) => el("span", { className: "name" }, p.title || p.paste_id || "—") },
+      {
+        label: "Gist",
+        cell: (p) => el("span", {},
+          linked(p.url, p.title || p.paste_id || "—"),
+          p.is_public === false ? el("span", { className: "dim" }, " · secret") : null,
+        ),
+      },
       valueCell("Comments"),
     ]),
   ];

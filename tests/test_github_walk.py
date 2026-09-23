@@ -54,7 +54,13 @@ def _repo_node(name: str = "o/a") -> dict[str, Any]:
                     "url": "https://github.com/o/a/releases/tag/v1",
                     "releaseAssets": {
                         "pageInfo": {"hasNextPage": False},
-                        "nodes": [{"name": "app.zip", "downloadCount": 508}],
+                        "nodes": [
+                        {
+                            "name": "app.zip",
+                            "downloadCount": 508,
+                            "downloadUrl": "https://github.com/o/a/releases/download/v1/app.zip",
+                        }
+                    ],
                     },
                 }
             ],
@@ -107,7 +113,15 @@ async def test_the_walk_flattens_releases_assets_and_refs() -> None:
     repo = detail["o/a"]
 
     assert repo["releases"][0]["tag"] == "v1"
-    assert repo["releases"][0]["assets"] == [{"name": "app.zip", "downloads": 508}]
+    assert repo["releases"][0]["assets"] == [
+        {
+            "name": "app.zip",
+            "downloads": 508,
+            # Carried so the page can link an asset to its actual download rather than
+            # assembling a URL from the release's and hoping the pattern holds.
+            "url": "https://github.com/o/a/releases/download/v1/app.zip",
+        }
+    ]
     assert "repository" not in repo["releases"][0]
     assert repo["branches"] == [{"name": "main", "sha": "abc"}]
     assert repo["tags"] == [{"name": "v1", "sha": "abc"}]

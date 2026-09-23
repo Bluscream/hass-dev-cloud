@@ -108,7 +108,14 @@ async def _build_release(
         "published_at": release.get("publishedAt"),
         "url": release.get("url"),
         # Asset and download totals are derived from this list, never stored beside it.
-        "assets": [{"name": a.get("name"), "downloads": a.get("downloadCount", 0)} for a in assets],
+        "assets": [
+            {
+                "name": a.get("name"),
+                "downloads": a.get("downloadCount", 0),
+                "url": a.get("downloadUrl"),
+            }
+            for a in assets
+        ],
     }
 
 
@@ -274,7 +281,12 @@ def _rest_release(name_with_owner: str, release: dict[str, Any]) -> dict[str, An
         "published_at": release.get("published_at"),
         "url": release.get("html_url"),
         "assets": [
-            {"name": a.get("name"), "downloads": a.get("download_count", 0)} for a in assets
+            {
+                "name": a.get("name"),
+                "downloads": a.get("download_count", 0),
+                "url": a.get("browser_download_url"),
+            }
+            for a in assets
         ],
     }
 
