@@ -412,14 +412,52 @@ function tiles(data) {
   );
 }
 
+/**
+ * One row per metered allowance. A platform can meter several independently — GitHub bills
+ * REST per request and GraphQL in points, against separate windows — and the two scalars on
+ * the snapshot only ever described the REST one.
+ */
+function budgetRows(data) {
+  const budgets = obj(data.budgets);
+  const quotas = Object.keys(budgets).sort();
+
+  if (quotas.length) {
+    return quotas.map((q) => {
+      const b = obj(budgets[q]);
+      return [
+        `Quota · ${q}`,
+        el("span", {},
+          b.remaining != null ? `${fmt(b.remaining)} left` : "unknown",
+          b.reset_at ? el("span", {}, " · resets ", until(ms(b.reset_at))) : null,
+        ),
+      ];
+    });
+  }
+
+  // Snapshots written before the allowance was persisted carry only the REST pair, and a
+  // platform that never returns a rate-limit header carries nothing at all. "Not observed"
+  // is the honest reading of the latter; an em dash reads as "zero" or "broken".
+  if (data.rate_limit_remaining == null && !data.rate_limit_reset) {
+    return [["Rate limit", el("span", { className: "dim" }, "not observed yet")]];
+  }
+  return [[
+    "Rate limit",
+    el("span", {},
+      data.rate_limit_remaining != null ? `${fmt(data.rate_limit_remaining)} left` : "unknown",
+      data.rate_limit_reset
+        ? el("span", {}, " · resets ", until(num(data.rate_limit_reset) * 1000))
+        : null,
+    ),
+  ]];
+}
+
 function metadataTable(data) {
   const rows = [
     ["Snapshot taken", el("span", {}, `${when(data.fetched_at)} · `, since(data.fetched_at))],
     ["Account", data.account || "—"],
     ["Platform", data.platform || "—"],
     ["Status", data.raw_status || "—"],
-    ["Rate limit remaining", data.rate_limit_remaining != null ? fmt(data.rate_limit_remaining) : "—"],
-    ["Rate limit resets", data.rate_limit_reset ? until(num(data.rate_limit_reset) * 1000) : "—"],
+    ...budgetRows(data),
     ["Collected resources", list(data.collected).join(", ") || "—"],
     ["Snapshot URL", data.json_url || "—"],
   ];

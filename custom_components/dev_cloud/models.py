@@ -162,6 +162,11 @@ class DevCloudData:
     totals: dict[str, int] = field(default_factory=dict)
     rate_limit_remaining: int | None = None
     rate_limit_reset: int | None = None
+    # Every metered allowance, keyed by quota. The two scalars above report only the REST
+    # one for backwards compatibility; a platform can meter several independently, and
+    # GitHub's GraphQL budget drains on a schedule of its own. Persisted so a reload does
+    # not forget what the allowance was - see ResourceScheduler.persisted_budgets.
+    budgets: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Per-resource schedule: when each collection was last fetched, when it is next due,
     # and what it cost. Written into the snapshot so a reload resumes the previous schedule
     # instead of refetching everything, and so the pacing is inspectable rather than opaque.

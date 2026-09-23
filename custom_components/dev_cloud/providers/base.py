@@ -144,6 +144,7 @@ class BaseDevCloudProvider(ABC):
         integration refetches the entire account each time it is redeployed.
         """
         self.scheduler.restore(snapshot.get("resources") or {})
+        self.scheduler.restore_budgets(snapshot.get("budgets") or {})
 
         data = from_dict(DevCloudData, snapshot)
 

@@ -272,3 +272,67 @@ def test_the_quota_is_usable_again_once_the_window_turns_over() -> None:
     scheduler.observe_rate_limit(0, time.time() - 1)
 
     assert scheduler.should_fetch("repos")
+
+
+# --- persisting the rate-limit allowance ------------------------------------------------
+
+
+def test_a_budget_round_trips_through_a_snapshot() -> None:
+    """Otherwise every reload starts with no idea what the allowance is."""
+    from dev_cloud.providers.scheduling import QUOTA_GRAPHQL, QUOTA_REST
+
+    sched = _scheduler()
+    reset = time.time() + 1800
+    sched.observe_rate_limit(4128, reset, QUOTA_REST)
+    sched.observe_rate_limit(3900, reset, QUOTA_GRAPHQL)
+
+    restored = _scheduler()
+    restored.restore_budgets(sched.persisted_budgets())
+
+    assert restored.budget(QUOTA_REST).remaining == 4128
+    assert restored.budget(QUOTA_GRAPHQL).remaining == 3900
+    assert restored.budget(QUOTA_REST).seconds_until_reset() == pytest.approx(1800, abs=5)
+
+
+def test_an_exhausted_quota_survives_a_reload() -> None:
+    """The point of persisting it at all.
+
+    A reload used to forget the block entirely and go straight back at the API, which is
+    what keeps a spent allowance spent - and a handful of redeploys in one afternoon is how
+    it gets spent in the first place.
+    """
+    sched = _scheduler()
+    sched.observe_rate_limit(0, time.time() + 1800)
+    assert not sched.should_fetch("repos")
+
+    restored = _scheduler()
+    restored.restore_budgets(sched.persisted_budgets())
+
+    assert not restored.should_fetch("repos")
+
+
+def test_a_window_that_has_turned_over_is_not_restored() -> None:
+    """A remaining count means nothing outside the window it was measured in: carrying it
+    forward would invent either headroom already spent or a block long since lifted."""
+    sched = _scheduler()
+    sched.observe_rate_limit(0, time.time() - 1)
+    saved = sched.persisted_budgets()
+    assert saved, "it is still written; restoring is where the staleness is judged"
+
+    restored = _scheduler()
+    restored.restore_budgets(saved)
+
+    assert restored.budget().remaining is None
+    assert restored.should_fetch("repos")
+
+
+def test_an_unobserved_budget_is_not_written() -> None:
+    """An absent figure and a figure of zero mean opposite things to every caller."""
+    assert _scheduler().persisted_budgets() == {}
+
+
+def test_restoring_junk_does_not_raise() -> None:
+    """Snapshots move between schema versions; a restore must never stop the integration."""
+    sched = _scheduler()
+    sched.restore_budgets({"rest": {"remaining": "lots", "reset_at": "not a date"}})
+    assert sched.budget().remaining is None

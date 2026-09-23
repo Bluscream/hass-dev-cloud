@@ -126,5 +126,6 @@ class NPMProvider(BaseDevCloudProvider):
             packages=packages,
             orgs=orgs,
             resources=self.scheduler.persisted_state(),
+            budgets=self.scheduler.persisted_budgets(),
             collected=self.collected_resources(),
         )

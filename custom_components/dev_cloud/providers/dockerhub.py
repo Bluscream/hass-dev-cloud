@@ -174,5 +174,6 @@ class DockerHubProvider(BaseDevCloudProvider):
             profile=profile,
             packages=packages,
             resources=self.scheduler.persisted_state(),
+            budgets=self.scheduler.persisted_budgets(),
             collected=self.collected_resources(),
         )

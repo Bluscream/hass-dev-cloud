@@ -295,5 +295,6 @@ class GitLabProvider(BaseDevCloudProvider):
             running_jobs=running_jobs,
             rate_limit_remaining=self.scheduler.budget().remaining,
             resources=self.scheduler.persisted_state(),
+            budgets=self.scheduler.persisted_budgets(),
             collected=self.collected_resources(),
         )

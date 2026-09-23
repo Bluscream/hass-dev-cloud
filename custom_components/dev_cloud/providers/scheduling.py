@@ -272,6 +272,50 @@ class ResourceScheduler:
             state.last_fetched = 0.0
             state.consecutive_failures = 0
 
+    def persisted_budgets(self) -> dict[str, dict[str, Any]]:
+        """Per-quota allowances, written into the snapshot and read back by restore_budgets.
+
+        Persisted for the same reason the schedule is. These only ever came from a response
+        header, so a reload started with no idea what the allowance was: every interval fell
+        back to its declared floor, and an exhausted quota was forgotten outright. A handful
+        of redeploys in one afternoon is exactly how a budget gets exhausted in the first
+        place, and forgetting the exhaustion is what keeps it that way.
+        """
+        saved: dict[str, dict[str, Any]] = {}
+        for quota, budget in self.budgets.items():
+            if budget.remaining is None and budget.reset_epoch is None:
+                continue
+            entry: dict[str, Any] = {"remaining": budget.remaining}
+            if budget.reset_epoch is not None:
+                # ISO, matching every other timestamp in the snapshot.
+                entry["reset_at"] = datetime.fromtimestamp(budget.reset_epoch, tz=UTC).isoformat()
+            saved[quota] = entry
+        return saved
+
+    def restore_budgets(self, saved: Mapping[str, Mapping[str, Any]]) -> None:
+        """Re-seed the allowances from a snapshot, dropping windows that have turned over.
+
+        A remaining count belongs to one reset window and means nothing outside it. Carrying
+        a stale figure forward would either invent headroom that was already spent or
+        invent a block that has long since lifted, so an expired window is discarded and the
+        next real response re-establishes the truth.
+        """
+        now = time.time()
+        for quota, entry in saved.items():
+            reset_raw = entry.get("reset_at")
+            reset: float | None = None
+            if isinstance(reset_raw, str):
+                with contextlib.suppress(ValueError):
+                    reset = datetime.fromisoformat(reset_raw).timestamp()
+            if reset is None or reset <= now:
+                continue
+
+            budget = self.budget(quota)
+            budget.reset_epoch = reset
+            remaining = entry.get("remaining")
+            if isinstance(remaining, int):
+                budget.remaining = remaining
+
     def record_fetch(self, key: str, cost: int) -> None:
         """Note that `key` was just refreshed, and what it actually cost in requests.
 
