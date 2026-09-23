@@ -14,12 +14,15 @@ than reporting a misleading zero.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
 )
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
@@ -29,9 +32,10 @@ from .aggregation import (
     collection_total,
     counted_issues,
 )
-from .const import PLATFORM_ICONS
+from .const import NOTIFICATION_ATTRIBUTE_LIMIT, PLATFORM_ICONS
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
+from .models import NotificationData
 
 
 async def async_setup_entry(
@@ -45,7 +49,10 @@ async def async_setup_entry(
     provider actually returned something behind it, per _OPTIONAL_SENSORS below.
     """
     coordinator = entry.runtime_data
-    entities: list[SensorEntity] = [DevCloudProfileSensor(coordinator)]
+    entities: list[SensorEntity] = [
+        DevCloudProfileSensor(coordinator),
+        DevCloudLastUpdatedSensor(coordinator),
+    ]
     entities.extend(
         build(coordinator) for build, has_data in _OPTIONAL_SENSORS if has_data(coordinator)
     )
@@ -272,12 +279,41 @@ class DevCloudNotificationsSensor(DevCloudBaseEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Totals the state does not already give, plus the unread list itself.
+
+        `unread_notifications` is deliberately absent: it is exactly the state, and an
+        attribute repeating the state is a second answer to the same question that can
+        disagree with the first.
+        """
         if not self.coordinator.data:
             return {}
         notifications = self.coordinator.data.notifications
+        unread = [n for n in notifications if n.unread]
         return {
             "total_notifications": len(notifications),
-            "unread_notifications": sum(1 for n in notifications if n.unread),
+            "read_notifications": len(notifications) - len(unread),
+            # Newest first, so a truncated list keeps the ones worth seeing. Capped because
+            # attributes are written to the recorder on every state change; the complete
+            # list is in the JSON snapshot the profile sensor links to.
+            "unread": [
+                {
+                    k: v
+                    for k, v in (
+                        ("id", n.notification_id),
+                        ("title", n.title),
+                        ("repository", n.repository),
+                        ("reason", n.reason),
+                        ("type", n.subject_type),
+                        ("url", n.url),
+                        ("updated_at", n.updated_at),
+                    )
+                    if v is not None
+                }
+                for n in sorted(unread, key=_notification_age, reverse=True)[
+                    :NOTIFICATION_ATTRIBUTE_LIMIT
+                ]
+            ],
+            "unread_truncated": max(len(unread) - NOTIFICATION_ATTRIBUTE_LIMIT, 0),
         }
 
 
@@ -571,6 +607,52 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
             "platform": self.coordinator.platform_id,
             "account": self.coordinator.account_name,
         }
+
+
+class DevCloudLastUpdatedSensor(DevCloudBaseEntity, SensorEntity):
+    """When the provider last returned a complete result.
+
+    Diagnostic rather than a headline reading, and a timestamp rather than an age: Home
+    Assistant renders a timestamp as a live "3 minutes ago" by itself, whereas a number of
+    seconds would have to be re-recorded on every poll to stay true.
+    """
+
+    _attr_icon = "mdi:clock-check-outline"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "last_updated")
+        self._attr_name = "Last Updated"
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.last_updated
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Per-resource schedule, so a stalled collection is visible without the JSON."""
+        if not self.coordinator.data:
+            return {}
+        resources = self.coordinator.data.resources
+        return {
+            "resources": sorted(resources),
+            "next_due_in": {
+                key: state.get("next_due_in")
+                for key, state in sorted(resources.items())
+                if state.get("next_due_in") is not None
+            },
+            "failing": sorted(key for key, state in resources.items() if state.get("failures")),
+        }
+
+
+def _notification_age(notification: NotificationData) -> str:
+    """Sort key putting the most recently updated notification first.
+
+    ISO-8601 timestamps sort correctly as strings, and an empty string sorts a
+    notification with no timestamp to the end rather than raising.
+    """
+    return notification.updated_at or ""
 
 
 def _total(coordinator: DevCloudCoordinator, field: str) -> StateType:

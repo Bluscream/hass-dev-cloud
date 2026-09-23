@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -94,6 +95,11 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         # repository on each property access.
         self.totals: Totals | None = None
 
+        # When the provider last returned a full result, surfaced by the Last Updated
+        # diagnostic sensor. Seeded from the restored snapshot so a reload reports when the
+        # data was actually gathered rather than blank until the next poll.
+        self.last_updated: datetime | None = None
+
         # The previous poll's serialised snapshot, diffed against the next one. Serialised
         # rather than live, because the provider mutates its cached objects in place — a
         # reference to the previous result would end up comparing objects against themselves.
@@ -132,6 +138,11 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         # not lose the events that happened while it was down.
         self._previous = snapshot
 
+        fetched_at = snapshot.get("fetched_at")
+        if isinstance(fetched_at, str):
+            with contextlib.suppress(ValueError):
+                self.last_updated = datetime.fromisoformat(fetched_at)
+
         _LOGGER.debug(
             "Restored %s:%s from its published snapshot", self.platform_id, self.account_name
         )
@@ -152,6 +163,7 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         # totals matching the data it is reading.
         self.data = data
         self.totals = compute_totals(self)
+        self.last_updated = datetime.now(UTC)
 
         # Serialised once and used twice: diffed against the previous poll, then written.
         payload = build_snapshot(self.platform_id, self.account_name, data)

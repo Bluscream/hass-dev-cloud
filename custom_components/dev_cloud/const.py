@@ -35,6 +35,12 @@ MIN_SCAN_INTERVAL: Final = 60
 RUNNING_JOBS_REPO_LIMIT: Final = 20
 RUNNING_JOBS_CONCURRENCY: Final = 5
 
+# Home Assistant caps a single entity's state attributes at 16 KiB, and every attribute is
+# written to the recorder on each state change. The unread notification list is the only
+# attribute here holding per-item detail, so it is capped; the full list is always in the
+# published JSON snapshot.
+NOTIFICATION_ATTRIBUTE_LIMIT: Final = 20
+
 # Event names
 EVENT_DEV_CLOUD: Final = "dev_cloud_event"
 EVENT_NEW_REPO: Final = "dev_cloud_new_repo"
