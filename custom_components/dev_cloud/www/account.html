@@ -757,10 +757,18 @@ function boards(data) {
     leaderboard(`Top ${TOP_N} popular paths`, Object.values(paths), (r) => r.count, [
       {
         label: "Path",
-        cell: (r) => el("span", {},
-          linked(pathUrl(r.path, r.repo.url), r.path),
-          r.title ? el("span", { className: "dim" }, ` · ${r.title}`) : null,
-        ),
+        // GitHub's title for a page is usually the tail of its own path - "/releases/tag/6.5.9"
+        // for a path ending in exactly that - so printing both says the same thing twice. It
+        // earns its place only when it is something the path does not already contain, which
+        // in practice means "Overview" for a repository's front page.
+        cell: (r) => {
+          const title = String(r.title || "");
+          const redundant = !title || r.path.endsWith(title);
+          return el("span", {},
+            linked(pathUrl(r.path, r.repo.url), r.path),
+            redundant ? null : el("span", { className: "dim" }, ` · ${title}`),
+          );
+        },
       },
       valueCell("Views"),
     ]),
