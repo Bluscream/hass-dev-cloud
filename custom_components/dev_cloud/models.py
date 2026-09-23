@@ -104,6 +104,12 @@ class PasteData:
     is_public: bool = True
     files_count: int = 1
     comments_count: int = 0
+    # None rather than 0: these come from a GraphQL walk the REST listing knows nothing
+    # about, so "nobody has asked yet" has to stay distinguishable from "nobody has starred
+    # it". A stored zero would be indistinguishable, which is the mistake watchers made.
+    stars: int | None = None
+    forks: int | None = None
+    is_fork: bool = False
     created_at: str | None = None
     updated_at: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)

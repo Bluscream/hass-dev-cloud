@@ -139,6 +139,39 @@ query($login: String!, $cursor: String, $size: Int!, $nested: Int!) {{
 }}
 """
 
+#: Stars and forks for an account's gists.
+#:
+#: REST exposes neither: the gist listing carries only a comment count, and the single-gist
+#: endpoint adds a forks array but no star count at all - at one request per gist, for a
+#: figure that is not there. GraphQL has both on the Gist type and pages a hundred at a
+#: time, so the whole set costs a point or two.
+#:
+#: There is deliberately no watcher count. Gists have no such concept; the Gist type has no
+#: watchers field, and inventing one from stargazers would be a different number wearing the
+#: wrong name.
+GIST_DETAIL_QUERY = """
+query($login: String!, $size: Int!, $cursor: String) {
+  user(login: $login) {
+    gists(
+      first: $size
+      after: $cursor
+      privacy: ALL
+      orderBy: {field: CREATED_AT, direction: DESC}
+    ) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name
+        isFork
+        stargazerCount
+        forks { totalCount }
+      }
+    }
+  }
+  rateLimit { cost remaining resetAt }
+}
+"""
+
+
 SPONSORS_QUERY = """
 query($login: String!) {
   user(login: $login) {

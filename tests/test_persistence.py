@@ -230,7 +230,9 @@ async def test_every_declared_github_resource_survives_a_reload(provider: Any) -
         profile=ProfileData(username="Bluscream"),
         repos=[repo],
         orgs=[OrgData(name="Org", is_owned=True, repos=[org_repo])],
-        pastes=[PasteData(paste_id="g1")],
+        # With stars, because paste_detail is only rebuilt for gists that carry a count -
+        # an unmeasured gist has nothing to restore, which is the point of the field.
+        pastes=[PasteData(paste_id="g1", stars=3, forks=1)],
         notifications=[NotificationData(notification_id="n1", title="t")],
         sponsors_count=3,
         sponsoring_count=1,

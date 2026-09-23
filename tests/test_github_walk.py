@@ -9,6 +9,7 @@ search-and-replace silently matched nothing. Nothing tested the walk, so nothing
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 from dev_cloud.providers.github import releases as walk
 from dev_cloud.providers.github.queries import USER_RELEASES_QUERY
@@ -134,3 +135,61 @@ async def test_a_repository_with_nothing_still_reports_every_key() -> None:
     assert set(detail["o/b"]) == {"releases", "branches", "tags", "watchers", "security_alerts"}
     assert detail["o/b"]["security_alerts"] == []
     assert detail["o/b"]["watchers"] is None
+
+
+def _gist_page(nodes: list[dict[str, Any]], cursor: str | None = None) -> dict[str, Any]:
+    return {
+        "user": {
+            "gists": {
+                "pageInfo": {"hasNextPage": bool(cursor), "endCursor": cursor},
+                "nodes": nodes,
+            }
+        }
+    }
+
+
+async def test_the_gist_walk_reads_stars_and_forks() -> None:
+    """REST exposes neither: the listing carries only a comment count, and the single-gist
+    endpoint adds a forks array but no star count at all."""
+    from dev_cloud.providers.github import GitHubProvider
+
+    provider = GitHubProvider(session=MagicMock(), account_name="Bluscream", api_token="t")
+    provider._async_graphql = AsyncMock(  # type: ignore[method-assign]
+        return_value=_gist_page(
+            [
+                {"name": "abc", "isFork": False, "stargazerCount": 12, "forks": {"totalCount": 3}},
+                {"name": "def", "isFork": True, "stargazerCount": 0, "forks": {"totalCount": 0}},
+            ]
+        )
+    )
+
+    detail = await provider._async_fetch_paste_detail()
+
+    assert detail["abc"] == {"stars": 12, "forks": 3, "is_fork": False}
+    assert detail["def"] == {"stars": 0, "forks": 0, "is_fork": True}
+
+
+async def test_the_gist_walk_follows_its_pages() -> None:
+    from dev_cloud.providers.github import GitHubProvider
+
+    provider = GitHubProvider(session=MagicMock(), account_name="Bluscream", api_token="t")
+    pages = [
+        _gist_page([{"name": "one", "stargazerCount": 1, "forks": {"totalCount": 0}}], "CUR"),
+        _gist_page([{"name": "two", "stargazerCount": 2, "forks": {"totalCount": 0}}]),
+    ]
+    provider._async_graphql = AsyncMock(side_effect=pages)  # type: ignore[method-assign]
+
+    detail = await provider._async_fetch_paste_detail()
+
+    assert sorted(detail) == ["one", "two"]
+
+
+def test_gist_counts_are_hung_off_the_gist() -> None:
+    from dev_cloud.models import PasteData
+    from dev_cloud.providers.github import GitHubProvider
+
+    pastes = [PasteData(paste_id="abc"), PasteData(paste_id="untouched")]
+    GitHubProvider._attach_paste_detail(pastes, {"abc": {"stars": 5, "forks": 2, "is_fork": True}})
+
+    assert (pastes[0].stars, pastes[0].forks, pastes[0].is_fork) == (5, 2, True)
+    assert pastes[1].stars is None, "a gist the walk did not cover stays unmeasured, not zero"

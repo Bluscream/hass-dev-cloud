@@ -405,6 +405,15 @@ const orgCell = {
   ),
 };
 
+const gistCell = {
+  label: "Gist",
+  cell: (p) => el("span", {},
+    linked(p.url, p.title || p.paste_id || "—"),
+    p.is_public === false ? el("span", { className: "dim" }, " · secret") : null,
+    p.is_fork ? el("span", { className: "dim" }, " · fork") : null,
+  ),
+};
+
 const repoCell = {
   label: "Repository",
   cell: (r) => {
@@ -416,6 +425,26 @@ const repoCell = {
     );
   },
 };
+/**
+ * Where a login lives on the forge.
+ *
+ * Resolved against the account's own profile URL rather than a hard-coded host, so the same
+ * page works for Gitea. GitHub Apps are the awkward case: they author issues and pull
+ * requests under a login like "renovate[bot]" that is not a user page at all, and only
+ * /apps/<name> resolves - so the marker is stripped and the path changed rather than
+ * producing 403 links for what is, on this account, most of the traffic.
+ */
+function userUrl(login, base) {
+  if (!base) return null;
+  const bot = login.endsWith("[bot]");
+  const path = bot ? `/apps/${login.slice(0, -5)}` : `/${login}`;
+  try {
+    return new URL(path, base).href;
+  } catch {
+    return null;
+  }
+}
+
 const valueCell = (label) => ({ label, numeric: true, cell: (_r, v) => fmt(v) });
 
 // --- sections ---------------------------------------------------------------------------
@@ -712,6 +741,23 @@ function boards(data) {
     ),
   };
 
+  // Every actor the snapshot can actually name. Issues and pull requests are the only
+  // things we collect that carry an author - releases, branches, tags and advisories have
+  // no person attached, and a gist's or issue's comment count is a number without anyone
+  // behind it, so counting those would credit them to whoever opened the thread.
+  const actors = {};
+  for (const r of repos) {
+    for (const [key, field] of [["issues", "issues"], ["prs", "prs"]]) {
+      for (const item of list(r[key])) {
+        const login = String(item.author || "");
+        if (!login) continue;
+        const into = actors[login] || (actors[login] = { login, issues: 0, prs: 0 });
+        into[field] += 1;
+      }
+    }
+  }
+  const base = obj(data.profile).profile_url;
+
   return [
     leaderboard(`Top ${TOP_N} repositories by stars`, repos, (r) => r.stars, [repoCell, valueCell("Stars")]),
     leaderboard(`Top ${TOP_N} repositories by downloads`, repos, downloadsOf, [repoCell, valueCell("Downloads")]),
@@ -777,16 +823,24 @@ function boards(data) {
         { label: "Package", cell: (p) => linked(p.url, p.name || "—") },
         valueCell("Downloads"),
       ]),
-    leaderboard(`Top ${TOP_N} gists by comments`, list(data.pastes), (p) => p.comments_count, [
+    leaderboard(`Top ${TOP_N} active users`, Object.values(actors), (u) => u.issues + u.prs, [
       {
-        label: "Gist",
-        cell: (p) => el("span", {},
-          linked(p.url, p.title || p.paste_id || "—"),
-          p.is_public === false ? el("span", { className: "dim" }, " · secret") : null,
+        label: "User",
+        cell: (u) => el("span", {},
+          linked(userUrl(u.login, base), u.login),
+          u.login.endsWith("[bot]") ? el("span", { className: "dim" }, " · bot") : null,
         ),
       },
-      valueCell("Comments"),
+      { label: "Issues", numeric: true, cell: (u) => fmt(u.issues) },
+      { label: "PRs", numeric: true, cell: (u) => fmt(u.prs) },
+      valueCell("Interactions"),
     ]),
+    leaderboard(`Top ${TOP_N} gists by stars`, list(data.pastes), (p) => p.stars,
+      [gistCell, valueCell("Stars")]),
+    leaderboard(`Top ${TOP_N} gists by forks`, list(data.pastes), (p) => p.forks,
+      [gistCell, valueCell("Forks")]),
+    leaderboard(`Top ${TOP_N} gists by comments`, list(data.pastes), (p) => p.comments_count,
+      [gistCell, valueCell("Comments")]),
   ];
 }
 

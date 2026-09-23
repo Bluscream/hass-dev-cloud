@@ -222,10 +222,17 @@ class DevCloudPastesSensor(DevCloudBaseEntity, SensorEntity):
         if not self.coordinator.data:
             return {}
         pastes = self.coordinator.data.pastes
-        attrs = {
+        starred = [p for p in pastes if p.stars is not None]
+        forked = [p for p in pastes if p.forks is not None]
+        attrs: dict[str, Any] = {
             "total_pastes": self.native_value,
             "public_pastes": sum(1 for p in pastes if p.is_public),
             "private_pastes": sum(1 for p in pastes if not p.is_public),
+            "forks_of_others": sum(1 for p in pastes if p.is_fork),
+            # None until the GraphQL walk has been round: REST exposes neither figure, so
+            # summing what it returned would be a confident zero for something never asked.
+            "total_stars": sum(p.stars or 0 for p in starred) if starred else None,
+            "total_forks": sum(p.forks or 0 for p in forked) if forked else None,
         }
         return {k: v for k, v in attrs.items() if v is not None}
 

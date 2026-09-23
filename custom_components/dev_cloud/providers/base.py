@@ -223,6 +223,22 @@ class BaseDevCloudProvider(ABC):
         if detail:
             self._resource_values["repo_detail"] = detail
 
+        # Gist stars and forks come from a walk the listing knows nothing about, so the
+        # resource is rebuilt from the gists exactly as the repository detail is - without
+        # this it is absent after a reload and the counts read as unmeasured until the walk
+        # next runs.
+        paste_detail = {
+            paste.paste_id: {
+                "stars": paste.stars,
+                "forks": paste.forks,
+                "is_fork": paste.is_fork,
+            }
+            for paste in data.pastes
+            if paste.stars is not None or paste.forks is not None
+        }
+        if paste_detail:
+            self._resource_values["paste_detail"] = paste_detail
+
         # Traffic is an accumulated cache rather than a copy of one response, so losing it
         # on reload would throw away history GitHub itself no longer holds. Organisation
         # repositories are swept too, so both sides are rebuilt into the one resource.

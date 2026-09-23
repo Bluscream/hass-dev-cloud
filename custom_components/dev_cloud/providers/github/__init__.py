@@ -35,7 +35,7 @@ from ..base import (
     async_map_limited,
 )
 from ..scheduling import QUOTA_GRAPHQL, PageWalker, ResourcePolicy
-from .queries import SPONSORS_QUERY
+from .queries import GIST_DETAIL_QUERY, SPONSORS_QUERY
 from .releases import (
     RepoDetail,
     async_fetch_all_releases,
@@ -76,6 +76,16 @@ class GitHubProvider(BaseDevCloudProvider):
             authenticated=900, anonymous=3600, depends_on=("repos",), min_cache=600
         ),
         "sponsors": ResourcePolicy(authenticated=3600, anonymous=None, quota=QUOTA_GRAPHQL),
+        # Stars and forks for gists, which REST does not expose at all. A hundred gists per
+        # page and two scalars each, so the whole set is a point or two - but it is still
+        # GraphQL, and it still waits for the same budget as the rest.
+        "paste_detail": ResourcePolicy(
+            authenticated=3600,
+            anonymous=None,
+            quota=QUOTA_GRAPHQL,
+            depends_on=("pastes",),
+            min_cache=1800,
+        ),
         # The GraphQL walk: releases, assets, branches, tags and the real watcher count for
         # every repository. Named for what it fetches rather than for releases alone, which
         # is only the largest part of it. By far the most expensive resource here.
@@ -462,6 +472,51 @@ class GitHubProvider(BaseDevCloudProvider):
             )
         return pastes
 
+    async def _async_fetch_paste_detail(self) -> dict[str, dict[str, Any]]:
+        """Star and fork counts for every gist, keyed by gist id.
+
+        Separate from the gist listing rather than replacing it: the REST listing works
+        without a token and returns secret gists when there is one, and this only adds the
+        two numbers it cannot see. When GraphQL is unavailable the gists are still there,
+        just without their stars.
+        """
+        detail: dict[str, dict[str, Any]] = {}
+        cursor: str | None = None
+
+        for _ in range(MAX_PAGES):
+            data = await self._async_graphql(
+                GIST_DETAIL_QUERY,
+                {"login": self.account_name, "size": GITHUB_PAGE_SIZE, "cursor": cursor},
+            )
+            gists = ((data.get("user") or {}).get("gists")) or {}
+            for node in gists.get("nodes") or []:
+                name = node.get("name")
+                if not name:
+                    continue
+                detail[str(name)] = {
+                    "stars": node.get("stargazerCount"),
+                    "forks": (node.get("forks") or {}).get("totalCount"),
+                    "is_fork": bool(node.get("isFork")),
+                }
+
+            page = gists.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            cursor = page.get("endCursor")
+
+        return detail
+
+    @staticmethod
+    def _attach_paste_detail(pastes: list[PasteData], detail: dict[str, dict[str, Any]]) -> None:
+        """Hang each gist's star and fork counts off the gist itself."""
+        for paste in pastes:
+            found = detail.get(paste.paste_id)
+            if not found:
+                continue
+            paste.stars = found.get("stars")
+            paste.forks = found.get("forks")
+            paste.is_fork = bool(found.get("is_fork"))
+
     async def _async_fetch_notifications(self) -> list[NotificationData]:
         notifications: list[NotificationData] = []
 
@@ -613,6 +668,20 @@ class GitHubProvider(BaseDevCloudProvider):
             forbidden_retry_days=TRAFFIC_FORBIDDEN_RETRY_DAYS,
         )
 
+    async def _async_pastes_with_detail(self) -> list[PasteData]:
+        """Gists from REST, with the star and fork counts only GraphQL can supply.
+
+        The attach runs outside `async_resource` because the counts have to be hung off the
+        gists on every poll, including the ones where the walk was not due and so fetched
+        nothing at all.
+        """
+        pastes: list[PasteData] = await self.async_resource("pastes", self._async_fetch_pastes, [])
+        detail: dict[str, dict[str, Any]] = await self.async_resource(
+            "paste_detail", self._async_fetch_paste_detail, {}
+        )
+        self._attach_paste_detail(pastes, detail)
+        return pastes
+
     async def async_fetch(self) -> DevCloudData:
         """Assemble a snapshot, refreshing only the resources that are due.
 
@@ -650,7 +719,7 @@ class GitHubProvider(BaseDevCloudProvider):
                 org.repos = []
             else:
                 org.repos = org_repos.get(org.name, org.repos)
-        pastes: list[PasteData] = await self.async_resource("pastes", self._async_fetch_pastes, [])
+        pastes: list[PasteData] = await self._async_pastes_with_detail()
         notifications: list[NotificationData] = await self.async_resource(
             "notifications", self._async_fetch_notifications, []
         )
