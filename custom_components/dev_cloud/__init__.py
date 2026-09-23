@@ -45,6 +45,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: DevCloudConfigEntry) -> 
             for platform in PLATFORMS:
                 cache.pop(f"{DOMAIN}.{platform}", None)
 
+    # Invalidate translation cache so newly added translation strings show up immediately
+    with contextlib.suppress(Exception):
+        from homeassistant.helpers.translation import TRANSLATION_FLATTEN_CACHE
+
+        trans_cache = hass.data.get(TRANSLATION_FLATTEN_CACHE)
+        if trans_cache is not None:
+            for lang_loaded in trans_cache.cache_data.loaded.values():
+                lang_loaded.discard(DOMAIN)
+            for lang_cache in trans_cache.cache_data.cache.values():
+                for cat_cache in lang_cache.values():
+                    cat_cache.pop(DOMAIN, None)
+
     # Re-resolve after the reload above: this module is not itself reloaded, so the
     # module-level import below still points at the pre-reload class object.
     from .coordinator import DevCloudCoordinator as CoordinatorClass
