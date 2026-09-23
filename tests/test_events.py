@@ -765,3 +765,82 @@ def test_a_new_advisory_is_announced_once_the_account_has_any() -> None:
 
     change = _one(events.diff(_snap(repos=before), _snap(repos=after)), "new_security_alert")
     assert change["subject"] == "GHSA-2"
+
+
+# --- scope and arrival are not change ---------------------------------------------------
+
+
+def _org(name: str, *repos: RepoData, owned: bool = False) -> OrgData:
+    return OrgData(name=name, is_owned=owned, repos=list(repos))
+
+
+def test_narrowing_the_organisation_option_is_not_a_mass_deletion() -> None:
+    """Turning include_non_owned_orgs off empties every non-owned organisation's list in
+    one poll. That is the walk changing scope, not 289 repositories being deleted - the
+    largest false notification this module can produce."""
+    mine = _org("Mine", _repo("Mine/a"), owned=True)
+    foreign = _org("Epic", *[_repo(f"Epic/r{i}") for i in range(40)])
+
+    before = _snap(orgs=[mine, foreign])
+    after = _snap(orgs=[mine, _org("Epic")])
+
+    assert not events.diff(before, after).updates
+
+
+def test_widening_the_organisation_option_is_not_a_mass_creation() -> None:
+    mine = _org("Mine", _repo("Mine/a"), owned=True)
+    foreign = _org("Epic", *[_repo(f"Epic/r{i}") for i in range(40)])
+
+    assert not events.diff(_snap(orgs=[mine, _org("Epic")]), _snap(orgs=[mine, foreign])).updates
+
+
+def test_an_organisation_genuinely_left_still_reports_its_repositories() -> None:
+    """The guard keys on an organisation that is still there with an empty list. One that
+    has gone is a real departure and its repositories really did go with it.
+
+    A survivor is needed on both counts for the fixture to test this at all. With the
+    repository listing emptying completely, or the organisation list emptying completely,
+    the older account-wide rule fires first and the poll is read as a failed fetch - which
+    is itself correct, and is why one of each is left standing here.
+    """
+    mine = _repo("Bluscream/own")
+    foreign = _org("Epic", _repo("Epic/a"), _repo("Epic/b"))
+    stays = _org("Mine", owned=True)
+
+    result = events.diff(
+        _snap(repos=[mine], orgs=[foreign, stays]), _snap(repos=[mine], orgs=[stays])
+    )
+
+    assert _kinds(result).count("repo_removed") == 2
+    assert "org_removed" in _kinds(result)
+
+
+def test_the_issue_search_arriving_is_not_a_hundred_new_issues() -> None:
+    """One request fills every repository's issue list, so when it returns from having
+    returned nothing there is no telling a fresh issue from a year-old one."""
+    before = [_repo("o/a"), _repo("o/b")]
+    after = [_repo("o/a", issues=(1, 2, 3)), _repo("o/b", issues=(4, 5), prs=(9,))]
+
+    kinds = _kinds(events.diff(_snap(repos=before), _snap(repos=after)))
+    assert "new_issue" not in kinds
+    assert "new_pull_request" not in kinds
+
+
+def test_an_issue_is_reported_once_the_account_has_any() -> None:
+    before = [_repo("o/a", issues=(1,))]
+    after = [_repo("o/a", issues=(1, 2))]
+
+    assert _one(events.diff(_snap(repos=before), _snap(repos=after)), "new_issue")["subject"] == "#2"
+
+
+def test_a_collection_arriving_all_at_once_is_the_fetch_not_the_world() -> None:
+    """One new organisation is news; forty-six in a single poll is a resource that was not
+    there last time."""
+    many = [OrgData(name=f"o{i}") for i in range(events.MASS_ARRIVAL)]
+    assert not events.diff(_snap(orgs=[]), _snap(orgs=many)).updates
+
+
+def test_a_handful_arriving_is_still_reported() -> None:
+    """The threshold has to let a plausible number of real additions through."""
+    few = [OrgData(name=f"o{i}") for i in range(events.MASS_ARRIVAL - 1)]
+    assert len(events.diff(_snap(orgs=[]), _snap(orgs=few)).updates) == events.MASS_ARRIVAL - 1

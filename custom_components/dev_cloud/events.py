@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Final, TypedDict
 
@@ -116,6 +117,16 @@ _BULKY_REPO_KEYS: Final = frozenset(
 #: the envelope (platform, account, run id, chunk counters) and for JSON's own overhead.
 MAX_EVENT_DATA_BYTES: Final = 32_768
 CHUNK_BUDGET_BYTES: Final = 24_000
+
+#: A collection going from empty to this many in one poll is the fetch arriving, not the
+#: world changing. One new organisation is news; forty-six at once is a resource that was
+#: not there last time. Arrivals below this are reported normally.
+MASS_ARRIVAL: Final = 10
+
+#: Nested per-repository collections whose emptiness is ambiguous. An empty list and a list
+#: nobody fetched are written to the snapshot identically, so no single repository can tell
+#: them apart - the account as a whole can.
+_AMBIGUOUS_COLLECTIONS: Final = ("security_alerts", "issues", "prs")
 
 #: A single change larger than this is truncated rather than dropped: losing the detail is
 #: recoverable from the snapshot, losing the whole event is not.
@@ -259,6 +270,49 @@ def _removals_trustworthy(old: Item, new: Item, field_name: str, repository: str
     return True
 
 
+def _is_mass_arrival(before: int, after: int) -> bool:
+    """Whether a collection went from nothing at all to many in a single poll."""
+    return before == 0 and after >= MASS_ARRIVAL
+
+
+def _known_collections(repos: Iterable[Item]) -> frozenset[str]:
+    """Which ambiguous collections the account had anything in at all last poll."""
+    repos = list(repos)
+    return frozenset(f for f in _AMBIGUOUS_COLLECTIONS if any(r.get(f) for r in repos))
+
+
+def _scope_changed_repos(previous: Item, current: Item) -> set[str]:
+    """Repositories belonging to an organisation whose list emptied or filled wholesale.
+
+    Turning the organisation option off empties every non-owned organisation's repository
+    list in one poll, and turning it back on refills it. Neither is repositories being
+    created or deleted - it is the walk changing scope - and at nearly three hundred
+    repositories it is the largest false notification this module can produce.
+
+    Only organisations present on both sides are considered. One genuinely joined or left
+    is a real change, and its repositories arriving or departing with it is the truth.
+    """
+
+    def by_name(payload: Item) -> dict[str, list[Item]]:
+        return {
+            str(org.get("name")): list(org.get("repos") or [])
+            for org in payload.get("orgs") or []
+            if org.get("name")
+        }
+
+    was, now = by_name(previous), by_name(current)
+    scoped: set[str] = set()
+    for name in was.keys() & now.keys():
+        before, after = was[name], now[name]
+        if bool(before) == bool(after):
+            continue
+        for repo in before or after:
+            full = repo.get("full_name")
+            if full:
+                scoped.add(str(full))
+    return scoped
+
+
 def _has_detail(repo: Item) -> bool:
     """Whether the detail walk covered this repository in this snapshot."""
     return any(repo.get(field) for field in _DETAIL_EVIDENCE)
@@ -289,6 +343,16 @@ def _repo_changes(previous: Item, current: Item) -> list[Change]:
     if was and not now:
         return []
 
+    # An organisation whose whole repository list appeared or vanished changed scope; its
+    # repositories are not news in either direction.
+    scoped = _scope_changed_repos(previous, current)
+    added = sorted(now.keys() - was.keys() - scoped)
+    removed = sorted(was.keys() - now.keys() - scoped)
+
+    if _is_mass_arrival(len(was), len(now)):
+        _LOGGER.debug("Repository listing went from empty to %d; treating as a fetch", len(now))
+        added = []
+
     changes: list[Change] = [
         {
             "kind": "new_repo",
@@ -298,7 +362,7 @@ def _repo_changes(previous: Item, current: Item) -> list[Change]:
             "url": str(now[name].get("url") or ""),
             "new": _prune_repo(now[name]),
         }
-        for name in sorted(now.keys() - was.keys())
+        for name in added
     ]
     changes += [
         {
@@ -309,7 +373,7 @@ def _repo_changes(previous: Item, current: Item) -> list[Change]:
             "url": str(was[name].get("url") or ""),
             "old": _prune_repo(was[name]),
         }
-        for name in sorted(was.keys() - now.keys())
+        for name in removed
     ]
 
     # Whether the account had *any* advisory at all last time. An advisory list that was
@@ -318,27 +382,17 @@ def _repo_changes(previous: Item, current: Item) -> list[Change]:
     # a list nobody fetched are written to the snapshot identically, so nothing about one
     # repository can tell them apart. This is the same rule as a collection that emptied
     # entirely being read as a failed fetch, pointed the other way.
-    alerts_known = any(repo.get("security_alerts") for repo in was.values())
+    known = _known_collections(was.values())
 
     for name in sorted(now.keys() & was.keys()):
-        changes += _one_repo(name, was[name], now[name], alerts_known=alerts_known)
+        changes += _one_repo(name, was[name], now[name], known=known)
 
     return changes
 
 
-def _one_repo(name: str, old: Item, new: Item, *, alerts_known: bool = True) -> list[Change]:
-    """Changes within a single repository, from the headline down to its refs."""
-    url = str(new.get("url") or old.get("url") or "")
+def _repo_counters(name: str, old: Item, new: Item, url: str, *, detail_both: bool) -> list[Change]:
+    """The repository's own numbers: stars, forks, watchers."""
     changes: list[Change] = []
-
-    # Whether the detail walk covered this repository on *both* sides. Everything gated on
-    # this comes from that walk - watchers, releases, refs, advisories, download counts -
-    # and is otherwise being compared against a default rather than a measurement. The
-    # comparison is then meaningless in both directions: things appear when the walk
-    # arrives and vanish when it is skipped. The values stay in the snapshot either way;
-    # they simply are not announced as news.
-    detail_both = _has_detail(old) and _has_detail(new)
-
     for metric, thing in _REPO_METRICS:
         # Both the walk having run and the figure actually being present. An absent key is
         # the writer having pruned a None, which is this repository never having been
@@ -361,15 +415,19 @@ def _one_repo(name: str, old: Item, new: Item, *, alerts_known: bool = True) -> 
                 "first": _first(before, after),
             }
         )
+    return changes
+
+
+def _repo_metadata(name: str, old: Item, new: Item, url: str) -> list[Change]:
+    """What the repository *is*, rather than how much of anything it has."""
+    common: Change = {"thing": THING_REPO, "subject": name, "repository": name, "url": url}
+    changes: list[Change] = []
 
     if old.get("is_archived") != new.get("is_archived"):
         changes.append(
             {
+                **common,
                 "kind": "repo_archived",
-                "thing": THING_REPO,
-                "subject": name,
-                "repository": name,
-                "url": url,
                 "old": bool(old.get("is_archived")),
                 "new": bool(new.get("is_archived")),
             }
@@ -377,44 +435,49 @@ def _one_repo(name: str, old: Item, new: Item, *, alerts_known: bool = True) -> 
     if old.get("is_private") != new.get("is_private"):
         changes.append(
             {
+                **common,
                 "kind": "repo_visibility_changed",
-                "thing": THING_REPO,
-                "subject": name,
-                "repository": name,
-                "url": url,
                 "old": "private" if old.get("is_private") else "public",
                 "new": "private" if new.get("is_private") else "public",
             }
         )
     if old.get("name") != new.get("name"):
         changes.append(
-            {
-                "kind": "repo_renamed",
-                "thing": THING_REPO,
-                "subject": name,
-                "repository": name,
-                "url": url,
-                "old": old.get("name"),
-                "new": new.get("name"),
-            }
+            {**common, "kind": "repo_renamed", "old": old.get("name"), "new": new.get("name")}
         )
 
     fields = _changed_fields(old, new, _REPO_WATCHED)
     if fields:
         changes.append(
             {
+                **common,
                 "kind": "repo_changed",
-                "thing": THING_REPO,
-                "subject": name,
-                "repository": name,
-                "url": url,
                 "detail": {f: {"old": old.get(f), "new": new.get(f)} for f in fields},
             }
         )
+    return changes
+
+
+def _one_repo(
+    name: str, old: Item, new: Item, *, known: frozenset[str] = frozenset(_AMBIGUOUS_COLLECTIONS)
+) -> list[Change]:
+    """Changes within a single repository, from the headline down to its refs."""
+    url = str(new.get("url") or old.get("url") or "")
+
+    # Whether the detail walk covered this repository on *both* sides. Everything gated on
+    # this comes from that walk - watchers, releases, refs, advisories, download counts -
+    # and is otherwise being compared against a default rather than a measurement. The
+    # comparison is then meaningless in both directions: things appear when the walk
+    # arrives and vanish when it is skipped. The values stay in the snapshot either way;
+    # they simply are not announced as news.
+    detail_both = _has_detail(old) and _has_detail(new)
+
+    changes = _repo_counters(name, old, new, url, detail_both=detail_both)
+    changes += _repo_metadata(name, old, new, url)
 
     if detail_both:
         changes += _release_changes(name, old, new)
-        changes += _security_changes(name, old, new, alerts_known=alerts_known)
+        changes += _security_changes(name, old, new, known="security_alerts" in known)
         changes += _download_changes(name, old, new)
         changes += _ref_changes(name, old, new, "branches", THING_BRANCH, "branch")
         changes += _ref_changes(name, old, new, "tags", THING_TAG, "tag")
@@ -422,8 +485,12 @@ def _one_repo(name: str, old: Item, new: Item, *, alerts_known: bool = True) -> 
     # Traffic is not part of that walk and carries its own baseline rule, so it is compared
     # whether or not the detail walk has been anywhere near this repository.
     changes += _traffic_changes(name, old, new)
-    changes += _thread_changes(name, old, new, "issues", THING_ISSUE, "issue")
-    changes += _thread_changes(name, old, new, "prs", THING_PR, "pull_request")
+    changes += _thread_changes(
+        name, old, new, "issues", THING_ISSUE, "issue", known="issues" in known
+    )
+    changes += _thread_changes(
+        name, old, new, "prs", THING_PR, "pull_request", known="prs" in known
+    )
     return changes
 
 
@@ -474,9 +541,7 @@ def _release_changes(repository: str, old: Item, new: Item) -> list[Change]:
     return changes
 
 
-def _security_changes(
-    repository: str, old: Item, new: Item, *, alerts_known: bool = True
-) -> list[Change]:
+def _security_changes(repository: str, old: Item, new: Item, *, known: bool = True) -> list[Change]:
     """New vulnerability alerts one by one; resolutions batched.
 
     A new alert is something to act on, so each gets its own line with the advisory
@@ -491,7 +556,7 @@ def _security_changes(
     # The account had no advisories anywhere last poll, so there is no way to tell one that
     # was just published from one that has been open for a year and is only now visible.
     # Announcing 871 of them at once is the wrong guess in every case but the first.
-    if not alerts_known:
+    if not known:
         _LOGGER.debug(
             "Advisories appeared for %s with none known account-wide; "
             "treating as the walk arriving rather than as new advisories",
@@ -700,11 +765,27 @@ def _ref_changes(
 
 
 def _thread_changes(
-    repository: str, old: Item, new: Item, field_name: str, thing: str, label: str
+    repository: str,
+    old: Item,
+    new: Item,
+    field_name: str,
+    thing: str,
+    label: str,
+    *,
+    known: bool = True,
 ) -> list[Change]:
     """Issues and pull requests. The lists hold only open ones, so a disappearance means it
-    was closed or merged rather than deleted."""
+    was closed or merged rather than deleted.
+
+    `known` says whether the account had any of these at all last poll. The search that
+    fills them is one request for the whole account, so when it comes back from having
+    returned nothing there is no way to tell a freshly opened issue from one that has been
+    open for a year - and announcing every open issue at once is the wrong guess for nearly
+    all of them.
+    """
     was, now = _by(old.get(field_name), "number"), _by(new.get(field_name), "number")
+    if not known and now and not was:
+        return []
     changes: list[Change] = [
         {
             "kind": f"new_{label}",
@@ -735,16 +816,21 @@ def _org_changes(previous: Item, current: Item) -> list[Change]:
     if not _comparable(previous, current, "orgs", "orgs"):
         return []
     was, now = _by(previous.get("orgs"), "name"), _by(current.get("orgs"), "name")
-    changes: list[Change] = [
-        {
-            "kind": "new_org",
-            "thing": THING_ORG,
-            "subject": name,
-            "url": str(now[name].get("url") or ""),
-            "new": {k: v for k, v in now[name].items() if k != "repos"},
-        }
-        for name in sorted(now.keys() - was.keys())
-    ]
+    arriving = _is_mass_arrival(len(was), len(now))
+    changes: list[Change] = (
+        []
+        if arriving
+        else [
+            {
+                "kind": "new_org",
+                "thing": THING_ORG,
+                "subject": name,
+                "url": str(now[name].get("url") or ""),
+                "new": {k: v for k, v in now[name].items() if k != "repos"},
+            }
+            for name in sorted(now.keys() - was.keys())
+        ]
+    )
     changes += [
         {
             "kind": "org_removed",
@@ -762,16 +848,21 @@ def _package_changes(previous: Item, current: Item) -> list[Change]:
     if not _comparable(previous, current, "packages", "packages"):
         return []
     was, now = _by(previous.get("packages"), "name"), _by(current.get("packages"), "name")
-    changes: list[Change] = [
-        {
-            "kind": "new_package",
-            "thing": THING_PACKAGE,
-            "subject": name,
-            "url": str(now[name].get("url") or ""),
-            "new": now[name],
-        }
-        for name in sorted(now.keys() - was.keys())
-    ]
+    arriving = _is_mass_arrival(len(was), len(now))
+    changes: list[Change] = (
+        []
+        if arriving
+        else [
+            {
+                "kind": "new_package",
+                "thing": THING_PACKAGE,
+                "subject": name,
+                "url": str(now[name].get("url") or ""),
+                "new": now[name],
+            }
+            for name in sorted(now.keys() - was.keys())
+        ]
+    )
     changes += [
         {
             "kind": "package_removed",
