@@ -144,6 +144,17 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
                 },
             )
 
+    async def async_force_refresh(self) -> None:
+        """Clear every resource's schedule and poll now.
+
+        Resources are normally paced against the API budget, which is what keeps the
+        integration inside it but also means a change can take an hour to show. This is the
+        override, exposed as the Force Refresh button.
+        """
+        _LOGGER.debug("Forcing a full refresh of %s:%s", self.platform_id, self.account_name)
+        self.provider.scheduler.reset()
+        await self.async_request_refresh()
+
     async def _async_restore(self) -> None:
         """Seed the provider from the last published snapshot, once per process."""
         self._restored = True

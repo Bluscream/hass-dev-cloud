@@ -196,3 +196,79 @@ def test_a_success_clears_the_failure_backoff() -> None:
     base = sched.effective_interval("repos")
     assert base is not None
     assert sched._failure_backoff("repos", base) == base
+
+
+def test_a_forced_refresh_makes_everything_due_again() -> None:
+    """The Force Refresh button: skip the pacing, for when you know something moved."""
+    scheduler = ResourceScheduler(
+        policies={
+            "repos": ResourcePolicy(authenticated=900, anonymous=3600),
+            "repo_detail": ResourcePolicy(authenticated=3600, anonymous=None, min_cache=1800),
+        },
+        has_token=True,
+    )
+    scheduler.record_fetch("repos", 6)
+    scheduler.record_fetch("repo_detail", 16)
+    assert not scheduler.should_fetch("repos")
+    assert not scheduler.should_fetch("repo_detail")
+
+    scheduler.reset()
+
+    assert scheduler.should_fetch("repos")
+    assert scheduler.should_fetch("repo_detail"), "even the half-hour hard floor"
+
+
+def test_a_forced_refresh_clears_the_failure_backoff() -> None:
+    """Holding someone to a doubling they cannot see would be perverse."""
+    scheduler = ResourceScheduler(
+        policies={"repos": ResourcePolicy(authenticated=900, anonymous=3600)}, has_token=True
+    )
+    for _ in range(4):
+        scheduler.record_failure("repos")
+
+    scheduler.reset()
+
+    assert scheduler.should_fetch("repos")
+
+
+def test_a_forced_refresh_does_not_override_an_exhausted_quota() -> None:
+    """Nothing will succeed before the window resets, and a button is not an argument."""
+    scheduler = ResourceScheduler(
+        policies={"repos": ResourcePolicy(authenticated=900, anonymous=3600)}, has_token=True
+    )
+    scheduler.observe_rate_limit(0, time.time() + 1800)
+
+    scheduler.reset()
+
+    interval = scheduler.effective_interval("repos")
+    assert interval is not None
+    assert interval > 900, "still stretched past its base interval, out to the reset"
+    assert not scheduler.should_fetch("repos")
+
+
+def test_a_long_outage_does_not_stampede_into_a_spent_quota() -> None:
+    """The same wall the forced refresh must not walk into, reached a different way.
+
+    effective_interval stretches out to the reset, but that is measured from the last
+    fetch - so a resource untouched for a day clears any interval however long.
+    """
+    scheduler = ResourceScheduler(
+        policies={"repos": ResourcePolicy(authenticated=900, anonymous=3600)}, has_token=True
+    )
+    scheduler.record_fetch("repos", 6)
+    scheduler._state("repos").last_fetched = time.time() - 86_400
+    assert scheduler.should_fetch("repos"), "due on the strength of its age alone"
+
+    scheduler.observe_rate_limit(0, time.time() + 1800)
+
+    assert not scheduler.should_fetch("repos")
+
+
+def test_the_quota_is_usable_again_once_the_window_turns_over() -> None:
+    """`remaining` stays a stale zero until a request succeeds, so waiting on it deadlocks."""
+    scheduler = ResourceScheduler(
+        policies={"repos": ResourcePolicy(authenticated=900, anonymous=3600)}, has_token=True
+    )
+    scheduler.observe_rate_limit(0, time.time() - 1)
+
+    assert scheduler.should_fetch("repos")

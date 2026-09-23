@@ -98,6 +98,15 @@ class RateLimitBudget:
             return 0.0
         return max(self.reset_epoch - time.time(), 0.0)
 
+    def is_exhausted(self) -> bool:
+        """Whether the allowance is known to be spent and the window has not turned over.
+
+        Once the reset time passes this goes false again even though `remaining` is still
+        the stale zero, because nothing updates `remaining` until a request succeeds — and
+        refusing to make that request would leave the quota permanently spent.
+        """
+        return self.remaining == 0 and self.seconds_until_reset() > 0
+
     def requests_per_second(self) -> float | None:
         """Safe sustained request rate until the quota resets, or None if unknown.
 
@@ -200,6 +209,15 @@ class ResourceScheduler:
             return False
 
         policy = self.policies.get(key)
+
+        # Nothing will succeed before the window turns over, so asking only prolongs the
+        # block. `effective_interval` already stretches out to the reset, but that is
+        # measured from the last fetch: a resource whose timestamp is old enough — after a
+        # forced refresh, or after Home Assistant has been down a while — clears any
+        # interval however long, and would stampede straight into the wall.
+        if policy is not None and self.budget(policy.quota).is_exhausted():
+            return False
+
         age = time.time() - self._state(key).last_fetched
 
         # The hard floor wins over everything, including a parent having changed.
@@ -240,6 +258,19 @@ class ResourceScheduler:
             cost = saved.get("cost")
             if isinstance(cost, int):
                 state.measured_cost = cost
+
+    def reset(self) -> None:
+        """Make every resource due right now.
+
+        Backs out the failure backoff as well as the interval: a manual refresh is a person
+        saying "try this again", and holding them to a doubling they cannot see would be
+        perverse. The rate-limit stretch in `effective_interval` is deliberately *not*
+        cleared - with the allowance spent, nothing will succeed before it resets, and a
+        button press is not an argument against that.
+        """
+        for state in self._states.values():
+            state.last_fetched = 0.0
+            state.consecutive_failures = 0
 
     def record_fetch(self, key: str, cost: int) -> None:
         """Note that `key` was just refreshed, and what it actually cost in requests.

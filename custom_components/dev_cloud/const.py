@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "dev_cloud"
-PLATFORMS: Final = ["sensor"]
+PLATFORMS: Final = ["sensor", "button"]
 
 # Configuration keys
 CONF_PLATFORM: Final = "platform"
