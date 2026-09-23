@@ -19,49 +19,53 @@ ensure_venv() {
 }
 
 # Full gate: format, lint, types, tests. Every step must pass before a deploy.
+# Tools are invoked as `python -m <tool>` rather than through their console scripts.
+# Those scripts carry an absolute shebang baked in at creation, so renaming the project
+# directory left every one of them pointing at a path that no longer exists -- and the gate
+# then died with "bad interpreter" partway through instead of reporting on the code.
+VENV_PY="$VENV_DIR/bin/python"
+
+# A missing tool fails the gate rather than skipping it. A gate that quietly checks less
+# than it claims to reports green for work nobody type-checked.
+run_tool() {
+  local tool="$1"
+  shift
+  if [ ! -x "$VENV_PY" ]; then
+    echo "ERROR: no interpreter at $VENV_PY - run '$0 setup' or recreate the venv" >&2
+    exit 1
+  fi
+  if ! "$VENV_PY" -c "import $tool" 2>/dev/null; then
+    echo "ERROR: $tool is not installed in $VENV_DIR" >&2
+    exit 1
+  fi
+  "$VENV_PY" -m "$tool" "$@"
+}
+
 run_lint() {
   echo "--> Running linters and type/syntax checks..."
-  if [ -x "$VENV_DIR/bin/ruff" ]; then
-    "$VENV_DIR/bin/ruff" check "$SRC_DIR"
-    "$VENV_DIR/bin/ruff" format --check "$SRC_DIR"
-  else
-    ruff check "$SRC_DIR"
-    ruff format --check "$SRC_DIR"
-  fi
+  run_tool ruff check "$SRC_DIR"
+  run_tool ruff format --check "$SRC_DIR"
   # find, not a glob: `providers/*.py` silently stopped covering the tree the moment a
   # provider became a package, and a compile step that quietly checks less than it used to
   # is worse than none.
   find "$SRC_DIR" -name '*.py' -not -path '*/__pycache__/*' -exec python3 -m py_compile {} +
   echo "Lint and compile passed!"
 
-  if [ -x "$VENV_DIR/bin/mypy" ]; then
-    echo "--> Type checking (mypy --strict)..."
-    "$VENV_DIR/bin/mypy" "$SRC_DIR"
-  else
-    echo "Warning: mypy not installed in $VENV_DIR, skipping type check"
-  fi
+  echo "--> Type checking (mypy --strict)..."
+  run_tool mypy "$SRC_DIR"
 
   run_tests
 }
 
 run_tests() {
-  if [ -x "$VENV_DIR/bin/pytest" ]; then
-    echo "--> Running tests..."
-    "$VENV_DIR/bin/pytest" "$ROOT_DIR/tests" -q
-  else
-    echo "Warning: pytest not installed in $VENV_DIR, skipping tests"
-  fi
+  echo "--> Running tests..."
+  run_tool pytest "$ROOT_DIR/tests" -q
 }
 
 run_format() {
   echo "--> Formatting code..."
-  if [ -x "$VENV_DIR/bin/ruff" ]; then
-    "$VENV_DIR/bin/ruff" check --fix "$SRC_DIR"
-    "$VENV_DIR/bin/ruff" format "$SRC_DIR"
-  else
-    ruff check --fix "$SRC_DIR"
-    ruff format "$SRC_DIR"
-  fi
+  run_tool ruff check --fix "$SRC_DIR"
+  run_tool ruff format "$SRC_DIR"
 }
 
 deploy_live() {
