@@ -8,20 +8,25 @@
   Served from /local/dev/<platform>/index.html, beside the account snapshots it reads.
 
   Written by storage.py, which substitutes the account list below; everything else is
-  static. Deliberately one self-contained file with no external requests: /local is served
-  by Home Assistant itself, often on a LAN with no route out, and a page about your own
-  data should not need somebody else's CDN to render.
+  static. The page is entirely dynamic: it fetches <account>.json at load and builds every
+  table and chart from it in the browser, so a fresh snapshot needs no new HTML.
+
+  Deliberately one self-contained file with no external requests: /local is served by Home
+  Assistant itself, often on a LAN with no route out, and a page about your own data should
+  not need somebody else's CDN to render. That is also why the charts are hand-drawn SVG
+  and CSS rather than a charting library.
 -->
 <style>
   :root {
     --bg: #f6f7f9; --panel: #fff; --ink: #14171a; --muted: #5b6672;
     --line: #e3e7ec; --accent: #2f6feb; --warn: #b54708; --good: #077d55;
-    --radius: 10px;
+    --track: #eef1f5; --radius: 10px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f1216; --panel: #171b21; --ink: #e8ecf1; --muted: #93a1b0;
       --line: #262c35; --accent: #6ea8ff; --warn: #f0a868; --good: #55d6a0;
+      --track: #1f242c;
     }
   }
   * { box-sizing: border-box; }
@@ -33,44 +38,63 @@
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   h1 { font-size: 26px; margin: 0 0 2px; }
-  h2 { font-size: 17px; margin: 32px 0 10px; }
-  .panel {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: var(--radius); padding: 16px;
-  }
+  h2 { font-size: 17px; margin: 34px 0 10px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
 
   header.profile { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
   header.profile img { width: 72px; height: 72px; border-radius: 50%; border: 1px solid var(--line); }
   .sub { color: var(--muted); font-size: 14px; }
   .bio { margin: 8px 0 0; max-width: 60ch; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-  .chip {
-    font-size: 12px; color: var(--muted); border: 1px solid var(--line);
-    border-radius: 999px; padding: 2px 9px;
-  }
+  .chip { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; }
 
   .tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); margin-top: 14px; }
   .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 13px; }
   .tile .v { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tile .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .tile .sub2 { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  /* Sticky, so the column meaning stays on screen while a top-25 scrolls underneath.
+     border-collapse: separate above is required - a collapsed border does not travel with
+     a sticky cell and the header ends up with no rule under it. */
+  thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: var(--panel); border-bottom: 0;
+    box-shadow: inset 0 -1px 0 var(--line);
+    font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); font-weight: 600;
+  }
   tbody tr:last-child td { border-bottom: 0; }
   td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
   td.rank { color: var(--muted); width: 2.5em; text-align: right; font-variant-numeric: tabular-nums; }
   .name { font-weight: 500; }
   .dim { color: var(--muted); }
+  .live { font-variant-numeric: tabular-nums; }
 
   .grid2 { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
   .tablecard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
   .tablecard h3 { margin: 0; padding: 12px 14px; font-size: 14px; border-bottom: 1px solid var(--line); }
   .tablecard .empty { padding: 14px; color: var(--muted); font-size: 14px; }
   .scroll { max-height: 520px; overflow-y: auto; }
+  .pad { padding: 14px; }
 
-  nav.accounts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
-  nav.accounts button {
+  /* Horizontal bar rows, used for the language and year breakdowns. */
+  .bars { display: grid; gap: 7px; }
+  .bar { display: grid; grid-template-columns: 11em 1fr 5.5em; gap: 10px; align-items: center; font-size: 13px; }
+  .bar .label { display: flex; gap: 6px; align-items: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar .swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .bar .track { background: var(--track); border-radius: 4px; height: 9px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 4px; }
+  .bar .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); padding: 0 14px 10px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+  svg.chart { display: block; width: 100%; height: auto; }
+
+  nav.accounts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
+  nav.accounts button, button.action {
     font: inherit; padding: 5px 12px; border-radius: 999px; cursor: pointer;
     border: 1px solid var(--line); background: var(--panel); color: var(--ink);
   }
@@ -78,12 +102,18 @@
   .status { color: var(--muted); font-size: 13px; margin-top: 6px; }
   .error { color: var(--warn); }
   footer { margin-top: 40px; font-size: 12px; color: var(--muted); }
-  @media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } }
+  @media (max-width: 560px) {
+    .grid2 { grid-template-columns: 1fr; }
+    .bar { grid-template-columns: 7em 1fr 4.5em; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <nav class="accounts" id="accounts" hidden></nav>
+  <nav class="accounts" id="accounts">
+    <button type="button" class="action" id="refresh">Refresh</button>
+    <span class="status" id="freshness"></span>
+  </nav>
   <div id="app"><p class="status">Loading…</p></div>
   <footer id="footer"></footer>
 </div>
@@ -95,41 +125,82 @@
 const ACCOUNTS = __ACCOUNTS__;
 /** How many rows each leaderboard shows. */
 const TOP_N = 25;
+/** Re-fetch this often while the tab is visible. The snapshot is large, so not often. */
+const REFRESH_MS = 5 * 60 * 1000;
 
 const $ = (sel) => document.querySelector(sel);
-const el = (tag, props = {}, ...kids) => {
-  const node = Object.assign(document.createElement(tag), props);
-  for (const kid of kids.flat()) if (kid != null) node.append(kid);
+// flat(Infinity), not flat(): a builder that returns several elements per item - the chart
+// emits a fill and a stroke for each series - nests one level deeper than the caller does,
+// and append() on a leftover Array silently coerces it to text instead of throwing.
+const append = (node, kids) => {
+  for (const kid of kids.flat(Infinity)) if (kid != null) node.append(kid);
   return node;
 };
+const el = (tag, props = {}, ...kids) => {
+  const { dataset, ...rest } = props;
+  const node = Object.assign(document.createElement(tag), rest);
+  if (dataset) Object.assign(node.dataset, dataset);
+  return append(node, kids);
+};
+const svg = (tag, attrs = {}, ...kids) => {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+  return append(node, kids);
+};
+
 /** The snapshot writer prunes nulls, empty strings and empty lists, so nothing is certain. */
 const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
 const fmt = (v) => num(v).toLocaleString();
 const list = (v) => (Array.isArray(v) ? v : []);
 const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+const ms = (iso) => { const t = Date.parse(iso); return isFinite(t) ? t : null; };
+
+// --- live clocks ----------------------------------------------------------------------
+//
+// Every relative time on the page is rendered from a timestamp held in a data attribute
+// and rewritten once a second, rather than baked into the text at load. A page left open
+// on a wall display would otherwise keep insisting the data is "just now" indefinitely.
+
+function spanUnits(seconds) {
+  const s = Math.max(Math.floor(seconds), 0);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function tick() {
+  const now = Date.now();
+  for (const node of document.querySelectorAll("[data-ts]")) {
+    const at = Number(node.dataset.ts);
+    node.textContent = at ? `${spanUnits((now - at) / 1000)} ago` : "—";
+  }
+  for (const node of document.querySelectorAll("[data-due]")) {
+    const at = Number(node.dataset.due);
+    if (!at) { node.textContent = "—"; continue; }
+    const left = (at - now) / 1000;
+    node.textContent = left <= 0 ? "due now" : `in ${spanUnits(left)}`;
+    node.style.color = left <= 0 ? "var(--good)" : "";
+  }
+}
+
+const since = (iso) => el("span", { className: "live", dataset: { ts: String(ms(iso) ?? 0) } }, "—");
+const until = (epochMs) => el("span", { className: "live", dataset: { due: String(epochMs || 0) } }, "—");
 
 function when(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return isNaN(d) ? String(iso) : d.toLocaleString();
+  const at = ms(iso);
+  return at == null ? "—" : new Date(at).toLocaleString();
 }
 
-function ago(iso) {
-  if (!iso) return "";
-  const secs = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (!isFinite(secs)) return "";
-  const steps = [[86400, "d"], [3600, "h"], [60, "m"]];
-  for (const [size, suffix] of steps) if (secs >= size) return `${Math.floor(secs / size)}${suffix} ago`;
-  return "just now";
-}
+// --- snapshot helpers -------------------------------------------------------------------
 
 /** Every repository in the snapshot: the account's own, plus each organisation's. */
 function allRepos(data) {
   return [
     ...list(data.repos),
-    ...list(data.orgs).flatMap((org) =>
-      list(org.repos).map((r) => ({ ...r, _org: org.name }))
-    ),
+    ...list(data.orgs).flatMap((org) => list(org.repos).map((r) => ({ ...r, _org: org.name }))),
   ];
 }
 
@@ -138,118 +209,109 @@ const downloadsOf = (repo) => assetsOf(repo).reduce((sum, a) => sum + num(a.down
 const trafficOf = (repo, series) =>
   Object.values(obj(obj(repo.traffic)[series])).reduce((sum, d) => sum + num(d.count), 0);
 
-// --- rendering ------------------------------------------------------------------------
+/**
+ * A stable colour per language. A lookup table of GitHub's own colours would be hundreds of
+ * entries and still miss whatever is new, so well-known ones are named and everything else
+ * gets a hue derived from its name - arbitrary, but consistent across reloads and distinct
+ * enough to tell two bars apart.
+ */
+const LANGUAGE_COLOURS = {
+  "C#": "#178600", "C++": "#f34b7d", C: "#555555", CSS: "#563d7c", Go: "#00ADD8",
+  HTML: "#e34c26", Java: "#b07219", JavaScript: "#f1e05a", Kotlin: "#A97BFF",
+  Lua: "#000080", PHP: "#4F5D95", PowerShell: "#012456", Python: "#3572A5",
+  Ruby: "#701516", Rust: "#dea584", Shell: "#89e051", Swift: "#F05138",
+  TypeScript: "#3178c6", Vue: "#41b883",
+};
 
-function profilePanel(data) {
-  const p = obj(data.profile);
-  const facts = [
-    p.location && `📍 ${p.location}`,
-    p.company && `🏢 ${p.company}`,
-    p.created_at && `🗓 joined ${when(p.created_at).split(",")[0]}`,
-    p.followers != null && `${fmt(p.followers)} followers`,
-    p.following != null && `following ${fmt(p.following)}`,
-  ].filter(Boolean);
-
-  return el("header", { className: "profile panel" },
-    p.avatar_url ? el("img", { src: p.avatar_url, alt: "", loading: "lazy" }) : null,
-    el("div", {},
-      el("h1", {}, p.display_name || p.username || data.account || "Account"),
-      el("div", { className: "sub" },
-        p.profile_url
-          ? el("a", { href: p.profile_url, target: "_blank", rel: "noreferrer" }, p.username || data.account)
-          : (p.username || data.account || ""),
-        ` · ${data.platform || ""}`,
-        p.blog ? el("span", {}, " · ", el("a", { href: p.blog, target: "_blank", rel: "noreferrer" }, p.blog)) : null,
-      ),
-      p.bio ? el("p", { className: "bio" }, p.bio) : null,
-      el("div", { className: "chips" }, facts.map((f) => el("span", { className: "chip" }, f))),
-    ),
-  );
+function colourFor(name) {
+  if (LANGUAGE_COLOURS[name]) return LANGUAGE_COLOURS[name];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  return `hsl(${Math.abs(hash) % 360} 62% 52%)`;
 }
 
-function tiles(data) {
-  const repos = allRepos(data);
-  const releases = repos.flatMap((r) => list(r.releases));
-  const assets = repos.flatMap(assetsOf);
-  const entries = [
-    ["Repositories", repos.length],
-    ["Stars", repos.reduce((s, r) => s + num(r.stars), 0)],
-    ["Forks", repos.reduce((s, r) => s + num(r.forks), 0)],
-    ["Watchers", repos.reduce((s, r) => s + num(r.watchers), 0)],
-    ["Organisations", list(data.orgs).length],
-    ["Releases", releases.length],
-    ["Assets", assets.length],
-    ["Downloads", assets.reduce((s, a) => s + num(a.downloads), 0)],
-    ["Open issues", repos.reduce((s, r) => s + list(r.issues).length, 0)],
-    ["Open PRs", repos.reduce((s, r) => s + list(r.prs).length, 0)],
-    ["Security alerts", repos.reduce((s, r) => s + list(r.security_alerts).length, 0)],
-    ["Gists / pastes", list(data.pastes).length],
-    ["Packages", list(data.packages).length],
-    ["Views", repos.reduce((s, r) => s + trafficOf(r, "views"), 0)],
-    ["Clones", repos.reduce((s, r) => s + trafficOf(r, "clones"), 0)],
-    ["Sponsors", num(data.sponsors_count)],
-  ];
-  return el("div", { className: "tiles" },
-    entries.map(([k, v]) =>
-      el("div", { className: "tile" }, el("div", { className: "v" }, fmt(v)), el("div", { className: "k" }, k))
-    ),
-  );
-}
+// --- building blocks --------------------------------------------------------------------
 
-function metadataTable(data) {
-  const rows = [
-    ["Snapshot taken", `${when(data.fetched_at)} (${ago(data.fetched_at)})`],
-    ["Account", data.account || "—"],
-    ["Platform", data.platform || "—"],
-    ["Status", data.raw_status || "—"],
-    ["Rate limit remaining", data.rate_limit_remaining != null ? fmt(data.rate_limit_remaining) : "—"],
-    ["Rate limit resets", data.rate_limit_reset ? when(new Date(num(data.rate_limit_reset) * 1000).toISOString()) : "—"],
-    ["Collected resources", list(data.collected).join(", ") || "—"],
-    ["Snapshot URL", data.json_url || "—"],
-  ];
-  return card("Snapshot metadata",
-    el("table", {},
-      el("tbody", {}, rows.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, String(v))))),
-    ),
-  );
-}
-
-function resourcesTable(data) {
-  const resources = obj(data.resources);
-  const keys = Object.keys(resources).sort();
-  if (!keys.length) return card("Resource schedule", null);
-  return card("Resource schedule",
-    el("table", {},
-      el("thead", {}, el("tr", {},
-        el("th", {}, "Resource"), el("th", {}, "Last fetched"),
-        el("th", { className: "n" }, "Next due"), el("th", { className: "n" }, "Cost"),
-        el("th", { className: "n" }, "Failures"),
-      )),
-      el("tbody", {}, keys.map((k) => {
-        const r = obj(resources[k]);
-        return el("tr", {},
-          el("td", { className: "name" }, k),
-          el("td", { className: "dim" }, ago(r.fetched_at) || "—"),
-          el("td", { className: "n" }, r.next_due_in != null ? `${Math.round(num(r.next_due_in))}s` : "—"),
-          el("td", { className: "n" }, r.cost != null ? fmt(r.cost) : "—"),
-          el("td", { className: "n" }, fmt(r.failures)),
-        );
-      })),
-    ),
-  );
-}
-
-function card(title, body) {
+function card(title, body, extra) {
   return el("section", { className: "tablecard" },
     el("h3", {}, title),
+    extra,
     body ? el("div", { className: "scroll" }, body) : el("div", { className: "empty" }, "Nothing recorded yet."),
   );
 }
 
+/** A ranked horizontal bar list. `rows` is [{name, value}], already summed. */
+function barList(rows, unit) {
+  const top = rows.filter((r) => r.value > 0).sort((a, b) => b.value - a.value).slice(0, TOP_N);
+  if (!top.length) return null;
+  const max = top[0].value;
+  return el("div", { className: "bars pad" },
+    top.map((r) =>
+      el("div", { className: "bar" },
+        el("div", { className: "label" },
+          el("span", { className: "swatch", style: `background:${r.colour || colourFor(r.name)}` }),
+          el("span", { title: r.name }, r.name),
+        ),
+        el("div", { className: "track" },
+          el("div", { className: "fill", style: `width:${(r.value / max) * 100}%;background:${r.colour || colourFor(r.name)}` }),
+        ),
+        el("div", { className: "val" }, `${fmt(r.value)}${unit ? " " + unit : ""}`),
+      ),
+    ),
+  );
+}
+
 /**
- * One leaderboard. `rows` is already whatever shape `columns` expects; anything scoring
- * zero is dropped, because a "top 25" padded out with zeroes says nothing.
+ * A two-series daily line chart, drawn as plain SVG. Dates are plotted by index rather than
+ * by time: the series only contains days that had traffic, and spacing them by real date
+ * would leave long flat gaps that read as "no data" rather than "nobody visited".
  */
+function lineChart(series, width = 560, height = 150) {
+  const labels = series[0]?.points.map((p) => p.date) ?? [];
+  if (labels.length < 2) return null;
+
+  const max = Math.max(1, ...series.flatMap((s) => s.points.map((p) => p.value)));
+  const pad = { left: 38, right: 8, top: 10, bottom: 18 };
+  const w = width - pad.left - pad.right;
+  const h = height - pad.top - pad.bottom;
+  const x = (i) => pad.left + (i / (labels.length - 1)) * w;
+  const y = (v) => pad.top + h - (v / max) * h;
+
+  const gridlines = [0, 0.5, 1].map((f) =>
+    svg("line", {
+      x1: pad.left, x2: width - pad.right, y1: y(max * f), y2: y(max * f),
+      stroke: "var(--line)", "stroke-width": 1,
+    }),
+  );
+  const labelsY = [0, 0.5, 1].map((f) =>
+    svg("text", { x: pad.left - 6, y: y(max * f) + 4, "text-anchor": "end",
+      "font-size": 10, fill: "var(--muted)" }, String(Math.round(max * f))),
+  );
+
+  const paths = series.map((s) => {
+    const points = s.points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ");
+    return [
+      svg("polygon", {
+        points: `${pad.left},${y(0)} ${points} ${x(labels.length - 1)},${y(0)}`,
+        fill: s.colour, opacity: 0.12,
+      }),
+      svg("polyline", { points, fill: "none", stroke: s.colour, "stroke-width": 2,
+        "stroke-linejoin": "round", "stroke-linecap": "round" }),
+    ];
+  });
+
+  return el("div", { className: "pad" },
+    svg("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, role: "img",
+      "aria-label": series.map((s) => s.name).join(" and ") + " per day" },
+      gridlines, labelsY, paths,
+      svg("text", { x: pad.left, y: height - 4, "font-size": 10, fill: "var(--muted)" }, labels[0]),
+      svg("text", { x: width - pad.right, y: height - 4, "text-anchor": "end",
+        "font-size": 10, fill: "var(--muted)" }, labels[labels.length - 1]),
+    ),
+  );
+}
+
+/** One leaderboard. Anything scoring zero is dropped: a top-25 padded with zeroes says nothing. */
 function leaderboard(title, rows, score, columns) {
   const ranked = rows
     .map((row) => [row, num(score(row))])
@@ -285,18 +347,244 @@ const repoCell = {
 };
 const valueCell = (label) => ({ label, numeric: true, cell: (_r, v) => fmt(v) });
 
+// --- sections ---------------------------------------------------------------------------
+
+function profilePanel(data) {
+  const p = obj(data.profile);
+  const facts = [
+    p.location && `📍 ${p.location}`,
+    p.company && `🏢 ${p.company}`,
+    p.created_at && `🗓 joined ${when(p.created_at).split(",")[0]}`,
+    p.followers != null && `${fmt(p.followers)} followers`,
+    p.following != null && `following ${fmt(p.following)}`,
+  ].filter(Boolean);
+
+  return el("header", { className: "profile panel" },
+    p.avatar_url ? el("img", { src: p.avatar_url, alt: "", loading: "lazy" }) : null,
+    el("div", {},
+      el("h1", {}, p.display_name || p.username || data.account || "Account"),
+      el("div", { className: "sub" },
+        p.profile_url
+          ? el("a", { href: p.profile_url, target: "_blank", rel: "noreferrer" }, p.username || data.account)
+          : (p.username || data.account || ""),
+        ` · ${data.platform || ""}`,
+        p.blog ? el("span", {}, " · ", el("a", { href: p.blog, target: "_blank", rel: "noreferrer" }, p.blog)) : null,
+      ),
+      p.bio ? el("p", { className: "bio" }, p.bio) : null,
+      el("div", { className: "chips" }, facts.map((f) => el("span", { className: "chip" }, f))),
+    ),
+  );
+}
+
+function tiles(data) {
+  const repos = allRepos(data);
+  const releases = repos.flatMap((r) => list(r.releases));
+  const assets = repos.flatMap(assetsOf);
+  const sources = repos.filter((r) => !r.is_fork).length;
+  const entries = [
+    ["Repositories", repos.length, `${fmt(sources)} sources · ${fmt(repos.length - sources)} forks`],
+    ["Stars", repos.reduce((s, r) => s + num(r.stars), 0)],
+    ["Forks", repos.reduce((s, r) => s + num(r.forks), 0)],
+    ["Watchers", repos.reduce((s, r) => s + num(r.watchers), 0)],
+    ["Organisations", list(data.orgs).length,
+      `${fmt(list(data.orgs).filter((o) => o.is_owned).length)} owned`],
+    ["Releases", releases.length],
+    ["Assets", assets.length],
+    ["Downloads", assets.reduce((s, a) => s + num(a.downloads), 0)],
+    ["Open issues", repos.reduce((s, r) => s + list(r.issues).length, 0)],
+    ["Open PRs", repos.reduce((s, r) => s + list(r.prs).length, 0)],
+    ["Security alerts", repos.reduce((s, r) => s + list(r.security_alerts).length, 0)],
+    ["Gists / pastes", list(data.pastes).length],
+    ["Packages", list(data.packages).length],
+    ["Views", repos.reduce((s, r) => s + trafficOf(r, "views"), 0)],
+    ["Clones", repos.reduce((s, r) => s + trafficOf(r, "clones"), 0)],
+    ["Private", repos.filter((r) => r.is_private).length,
+      `${fmt(repos.filter((r) => r.is_archived).length)} archived`],
+  ];
+  return el("div", { className: "tiles" },
+    entries.map(([k, v, sub]) =>
+      el("div", { className: "tile" },
+        el("div", { className: "v" }, fmt(v)),
+        el("div", { className: "k" }, k),
+        sub ? el("div", { className: "sub2" }, sub) : null,
+      ),
+    ),
+  );
+}
+
+function metadataTable(data) {
+  const rows = [
+    ["Snapshot taken", el("span", {}, `${when(data.fetched_at)} · `, since(data.fetched_at))],
+    ["Account", data.account || "—"],
+    ["Platform", data.platform || "—"],
+    ["Status", data.raw_status || "—"],
+    ["Rate limit remaining", data.rate_limit_remaining != null ? fmt(data.rate_limit_remaining) : "—"],
+    ["Rate limit resets", data.rate_limit_reset ? until(num(data.rate_limit_reset) * 1000) : "—"],
+    ["Collected resources", list(data.collected).join(", ") || "—"],
+    ["Snapshot URL", data.json_url || "—"],
+  ];
+  return card("Snapshot metadata",
+    el("table", {},
+      el("tbody", {}, rows.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v)))),
+    ),
+  );
+}
+
+function resourcesTable(data) {
+  const resources = obj(data.resources);
+  const keys = Object.keys(resources).sort();
+  if (!keys.length) return card("Resource schedule", null);
+
+  // next_due_in was measured when the snapshot was written, so the absolute moment it
+  // refers to is that timestamp plus the offset. Counting down from page load instead
+  // would be wrong by however long the page sat there before being opened.
+  const base = ms(data.fetched_at) ?? Date.now();
+
+  return card("Resource schedule",
+    el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Resource"), el("th", {}, "Last fetched"), el("th", {}, "Next due"),
+        el("th", { className: "n" }, "Cost"), el("th", { className: "n" }, "Failures"),
+      )),
+      el("tbody", {}, keys.map((k) => {
+        const r = obj(resources[k]);
+        return el("tr", {},
+          el("td", { className: "name" }, k),
+          el("td", { className: "dim" }, since(r.fetched_at)),
+          el("td", {}, r.next_due_in != null ? until(base + num(r.next_due_in) * 1000) : "—"),
+          el("td", { className: "n" }, r.cost != null ? fmt(r.cost) : "—"),
+          el("td", { className: "n" }, fmt(r.failures)),
+        );
+      })),
+    ),
+  );
+}
+
+function languageSections(data) {
+  const repos = allRepos(data).filter((r) => r.primary_language);
+  if (!repos.length) return [];
+
+  const byCount = {};
+  const byStars = {};
+  for (const r of repos) {
+    const lang = r.primary_language;
+    byCount[lang] = (byCount[lang] || 0) + 1;
+    byStars[lang] = (byStars[lang] || 0) + num(r.stars);
+  }
+  const rows = (map) => Object.entries(map).map(([name, value]) => ({ name, value }));
+
+  return [
+    card("Repositories per language", barList(rows(byCount), "repos")),
+    card("Stars per language", barList(rows(byStars), "stars")),
+  ];
+}
+
+function activitySections(data) {
+  const repos = allRepos(data);
+
+  const byYear = {};
+  for (const r of repos) {
+    const year = String(r.created_at || "").slice(0, 4);
+    if (/^\d{4}$/.test(year)) byYear[year] = (byYear[year] || 0) + 1;
+  }
+  const years = Object.keys(byYear).sort();
+  const yearRows = years.map((y) => ({ name: y, value: byYear[y], colour: "var(--accent)" }));
+
+  const pushed = repos
+    .filter((r) => ms(r.pushed_at))
+    .sort((a, b) => ms(b.pushed_at) - ms(a.pushed_at))
+    .slice(0, TOP_N);
+
+  const recent = pushed.length
+    ? card("Most recently pushed",
+        el("table", {},
+          el("thead", {}, el("tr", {}, el("th", {}, "#"), el("th", {}, "Repository"), el("th", {}, "Pushed"))),
+          el("tbody", {}, pushed.map((r, i) =>
+            el("tr", {},
+              el("td", { className: "rank" }, String(i + 1)),
+              el("td", {}, repoCell.cell(r)),
+              el("td", { className: "dim" }, since(r.pushed_at)),
+            ),
+          )),
+        ))
+    : card("Most recently pushed", null);
+
+  // Sorted ascending so the bars read as a timeline rather than a ranking.
+  const timeline = yearRows.length
+    ? card("Repositories created per year",
+        el("div", { className: "bars pad" },
+          yearRows.map((r) => {
+            const max = Math.max(...yearRows.map((x) => x.value));
+            return el("div", { className: "bar" },
+              el("div", { className: "label" }, el("span", {}, r.name)),
+              el("div", { className: "track" },
+                el("div", { className: "fill", style: `width:${(r.value / max) * 100}%;background:var(--accent)` })),
+              el("div", { className: "val" }, fmt(r.value)),
+            );
+          }),
+        ))
+    : card("Repositories created per year", null);
+
+  return [timeline, recent];
+}
+
+function trafficSection(data) {
+  const repos = allRepos(data);
+  const merge = (series) => {
+    const totals = {};
+    for (const r of repos) {
+      for (const [date, day] of Object.entries(obj(obj(r.traffic)[series]))) {
+        totals[date] = (totals[date] || 0) + num(day.count);
+      }
+    }
+    return Object.keys(totals).sort().map((date) => ({ date, value: totals[date] }));
+  };
+
+  const views = merge("views");
+  const clones = merge("clones");
+  if (views.length < 2 && clones.length < 2) return null;
+
+  // Both series need the same x positions, so they are aligned onto the union of dates.
+  const dates = [...new Set([...views, ...clones].map((p) => p.date))].sort();
+  const align = (points) => {
+    const by = Object.fromEntries(points.map((p) => [p.date, p.value]));
+    return dates.map((date) => ({ date, value: by[date] || 0 }));
+  };
+
+  const chart = lineChart([
+    { name: "Views", colour: "var(--accent)", points: align(views) },
+    { name: "Clones", colour: "var(--good)", points: align(clones) },
+  ]);
+
+  return card(
+    "Traffic per day",
+    chart,
+    el("div", { className: "legend" },
+      el("span", {}, el("i", { style: "background:var(--accent)" }), "Views"),
+      el("span", {}, el("i", { style: "background:var(--good)" }), "Clones"),
+      el("span", { className: "dim" }, `${dates.length} days on record · kept past GitHub's 14-day window`),
+    ),
+  );
+}
+
 function boards(data) {
   const repos = allRepos(data);
   const orgs = list(data.orgs);
   const releases = repos.flatMap((r) => list(r.releases).map((rel) => ({ ...rel, _repo: r })));
   const assets = repos.flatMap((r) =>
-    list(r.releases).flatMap((rel) => list(rel.assets).map((a) => ({ ...a, _repo: r, _tag: rel.tag })))
+    list(r.releases).flatMap((rel) => list(rel.assets).map((a) => ({ ...a, _repo: r, _tag: rel.tag }))),
   );
 
   const referrers = {};
   for (const r of repos) {
     for (const [site, entry] of Object.entries(obj(obj(r.traffic).referrers))) {
       referrers[site] = (referrers[site] || 0) + num(entry.count);
+    }
+  }
+  const paths = {};
+  for (const r of repos) {
+    for (const [path, entry] of Object.entries(obj(obj(r.traffic).paths))) {
+      paths[path] = (paths[path] || 0) + num(entry.count);
     }
   }
 
@@ -326,10 +614,11 @@ function boards(data) {
       },
       valueCell("Repositories"),
     ]),
-    leaderboard(`Top ${TOP_N} organisations by stars`, orgs, (o) => list(o.repos).reduce((s, r) => s + num(r.stars), 0), [
-      { label: "Organisation", cell: (o) => el("span", { className: "name" }, o.display_name || o.name || "—") },
-      valueCell("Stars"),
-    ]),
+    leaderboard(`Top ${TOP_N} organisations by stars`, orgs,
+      (o) => list(o.repos).reduce((s, r) => s + num(r.stars), 0), [
+        { label: "Organisation", cell: (o) => el("span", { className: "name" }, o.display_name || o.name || "—") },
+        valueCell("Stars"),
+      ]),
     leaderboard(`Top ${TOP_N} repositories by open issues`, repos, (r) => list(r.issues).length, [repoCell, valueCell("Issues")]),
     leaderboard(`Top ${TOP_N} repositories by open pull requests`, repos, (r) => list(r.prs).length, [repoCell, valueCell("PRs")]),
     leaderboard(`Top ${TOP_N} repositories by security alerts`, repos, (r) => list(r.security_alerts).length, [repoCell, valueCell("Alerts")]),
@@ -352,6 +641,11 @@ function boards(data) {
         { label: "Referrer", cell: (r) => el("span", { className: "name" }, r.site) },
         valueCell("Visits"),
       ]),
+    leaderboard(`Top ${TOP_N} popular paths`, Object.entries(paths).map(([path, count]) => ({ path, count })),
+      (r) => r.count, [
+        { label: "Path", cell: (r) => el("span", { className: "name" }, r.path) },
+        valueCell("Views"),
+      ]),
     leaderboard(`Top ${TOP_N} packages by downloads`, list(data.packages),
       (p) => num(p.downloads_total) + num(p.pull_count), [
         { label: "Package", cell: (p) => el("span", { className: "name" }, p.name || "—") },
@@ -364,31 +658,46 @@ function boards(data) {
   ];
 }
 
+// --- wiring -----------------------------------------------------------------------------
+
+let loadedAt = 0;
+
 function render(data) {
-  const app = $("#app");
-  app.replaceChildren(
+  const traffic = trafficSection(data);
+  const languages = languageSections(data);
+
+  $("#app").replaceChildren(
     profilePanel(data),
     tiles(data),
     el("h2", {}, "Metadata"),
     el("div", { className: "grid2" }, metadataTable(data), resourcesTable(data)),
+    ...(languages.length ? [el("h2", {}, "Languages"), el("div", { className: "grid2" }, languages)] : []),
+    el("h2", {}, "Activity"),
+    el("div", { className: "grid2" }, activitySections(data)),
+    ...(traffic ? [el("h2", {}, "Traffic"), el("div", { className: "grid2" }, traffic)] : []),
     el("h2", {}, "Leaderboards"),
     el("div", { className: "grid2" }, boards(data)),
   );
   $("#footer").textContent =
     `${allRepos(data).length} repositories read from ${data.json_url || "the snapshot"}.`;
+  tick();
 }
 
+let currentSlug = null;
+
 async function show(slug) {
-  for (const button of document.querySelectorAll("nav.accounts button")) {
+  currentSlug = slug;
+  for (const button of document.querySelectorAll("nav.accounts button[data-slug]")) {
     button.setAttribute("aria-current", String(button.dataset.slug === slug));
   }
-  $("#app").replaceChildren(el("p", { className: "status" }, `Loading ${slug}…`));
   try {
     // Cache-busted: the snapshot is rewritten every poll and a stale page is worse than a
     // slow one, especially behind Home Assistant's own long static-asset caching.
     const response = await fetch(`./${encodeURIComponent(slug)}.json?t=${Date.now()}`);
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     render(await response.json());
+    loadedAt = Date.now();
+    $("#freshness").replaceChildren("page loaded ", since(new Date(loadedAt).toISOString()));
   } catch (err) {
     $("#app").replaceChildren(
       el("p", { className: "status error" }, `Could not load ${slug}.json — ${err.message}`),
@@ -403,11 +712,19 @@ function start() {
   }
   const nav = $("#accounts");
   if (ACCOUNTS.length > 1) {
-    nav.hidden = false;
-    nav.replaceChildren(...ACCOUNTS.map((slug) =>
-      el("button", { type: "button", dataset: { slug }, onclick: () => show(slug) }, slug)
-    ));
+    for (const slug of [...ACCOUNTS].reverse()) {
+      nav.prepend(el("button", { type: "button", dataset: { slug }, onclick: () => show(slug) }, slug));
+    }
   }
+  $("#refresh").onclick = () => currentSlug && show(currentSlug);
+
+  setInterval(tick, 1000);
+  // Only while the tab is actually being looked at: the snapshot runs to megabytes and
+  // re-pulling it into a background tab every five minutes is pure waste.
+  setInterval(() => {
+    if (document.visibilityState === "visible" && currentSlug) show(currentSlug);
+  }, REFRESH_MS);
+
   const wanted = new URLSearchParams(location.search).get("account");
   show(ACCOUNTS.includes(wanted) ? wanted : ACCOUNTS[0]);
 }
