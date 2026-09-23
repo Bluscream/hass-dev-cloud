@@ -41,6 +41,23 @@ RUNNING_JOBS_CONCURRENCY: Final = 5
 # published JSON snapshot.
 NOTIFICATION_ATTRIBUTE_LIMIT: Final = 20
 
+# GitHub's traffic endpoints cost four requests per repository and need push access, so a
+# whole account cannot be swept in one poll. Each sweep takes a fixed handful, least recently
+# fetched first, and works its way round. The deadline is GitHub's own fourteen-day
+# retention: at ten repositories per ten-minute poll, six hundred are covered in ten hours,
+# which is comfortably inside it. A constant per-sweep cost is also what lets the scheduler
+# measure the resource once and pace it against the remaining budget like any other.
+TRAFFIC_REPOS_PER_SWEEP: Final = 10
+TRAFFIC_CONCURRENCY: Final = 4
+# Roughly two years of per-day buckets, and only days with traffic are kept.
+TRAFFIC_HISTORY_DAYS: Final = 730
+# A repository the token cannot push to answers 403 forever. Retrying weekly picks up newly
+# granted access without spending every sweep rediscovering the same refusals.
+TRAFFIC_FORBIDDEN_RETRY_DAYS: Final = 7
+# Referring sites listed on the traffic sensors. Same reasoning as the notification cap:
+# attributes are recorded on every state change, and the full set is in the snapshot.
+TRAFFIC_REFERRER_ATTRIBUTE_LIMIT: Final = 10
+
 # Event names
 #
 # Two, deliberately. Twenty-nine separate event types meant every consumer had to enumerate

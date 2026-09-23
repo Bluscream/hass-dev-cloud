@@ -13,8 +13,17 @@ from aiogithubapi import (
     GitHubRatelimitException,
 )
 from aiohttp import ClientSession
+from yarl import URL
 
-from ...const import PLATFORM_GITHUB, RUNNING_JOBS_CONCURRENCY, RUNNING_JOBS_REPO_LIMIT
+from ...const import (
+    PLATFORM_GITHUB,
+    RUNNING_JOBS_CONCURRENCY,
+    RUNNING_JOBS_REPO_LIMIT,
+    TRAFFIC_CONCURRENCY,
+    TRAFFIC_FORBIDDEN_RETRY_DAYS,
+    TRAFFIC_HISTORY_DAYS,
+    TRAFFIC_REPOS_PER_SWEEP,
+)
 from ...models import DevCloudData, NotificationData, OrgData, PasteData, ProfileData, RepoData
 from ..base import (
     MAX_PAGES,
@@ -33,6 +42,7 @@ from .releases import (
     async_fetch_org_releases,
     async_fetch_releases_via_rest,
 )
+from .traffic import TrafficCache, async_sweep_traffic, attach_traffic
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +100,14 @@ class GitHubProvider(BaseDevCloudProvider):
         # Must stay fresh to mean anything, but is capped to a handful of repos.
         "running_jobs": ResourcePolicy(
             authenticated=300, anonymous=600, depends_on=("repos",), min_cache=120
+        ),
+        # One step of the rotating traffic sweep, not the whole account: each run covers
+        # TRAFFIC_REPOS_PER_SWEEP repositories and moves on. Runs often *because* it is
+        # partial - the sweep only advances when it runs, and it has to get round everything
+        # inside GitHub's fourteen-day retention. Needs push access, so there is no
+        # anonymous mode at all.
+        "traffic": ResourcePolicy(
+            authenticated=600, anonymous=None, depends_on=("repos",), min_cache=300
         ),
     }
 
@@ -559,6 +577,42 @@ class GitHubProvider(BaseDevCloudProvider):
             RUNNING_JOBS_CONCURRENCY,
         )
 
+    async def _async_traffic_json(self, url: URL) -> Any:
+        """One traffic endpoint, with its rate-limit headers fed back to the scheduler.
+
+        ETags are skipped: a 304 would hand back the previous window rather than the current
+        one, and the sweep visits each repository rarely enough that there is nothing to save.
+        """
+        data, headers = await self.async_get_json(url, use_etag=False)
+
+        remaining_raw = headers.get("x-ratelimit-remaining") or headers.get("X-RateLimit-Remaining")
+        reset_raw = headers.get("x-ratelimit-reset") or headers.get("X-RateLimit-Reset")
+        remaining: int | None = None
+        reset: float | None = None
+        with contextlib.suppress(TypeError, ValueError):
+            if remaining_raw is not None:
+                remaining = int(remaining_raw)
+        with contextlib.suppress(TypeError, ValueError):
+            if reset_raw is not None:
+                reset = float(reset_raw)
+        self.scheduler.observe_rate_limit(remaining, reset)
+
+        return data
+
+    async def _async_sweep_traffic(self, repos: list[RepoData]) -> TrafficCache:
+        """Advance the rotating traffic sweep by one step."""
+        cache: TrafficCache = self._resource_values.get("traffic", {})
+        return await async_sweep_traffic(
+            self._async_traffic_json,
+            self.base_url,
+            repos,
+            cache,
+            per_sweep=TRAFFIC_REPOS_PER_SWEEP,
+            concurrency=TRAFFIC_CONCURRENCY,
+            history_days=TRAFFIC_HISTORY_DAYS,
+            forbidden_retry_days=TRAFFIC_FORBIDDEN_RETRY_DAYS,
+        )
+
     async def async_fetch(self) -> DevCloudData:
         """Assemble a snapshot, refreshing only the resources that are due.
 
@@ -619,6 +673,16 @@ class GitHubProvider(BaseDevCloudProvider):
         self._attach_detail(repos, repo_detail)
         for org in target_orgs:
             self._attach_detail(org.repos, org_detail)
+        # Traffic needs push access, so the sweep covers this account's own repositories and
+        # those of organisations it owns. Anything else answers 403 once and drops out.
+        traffic_repos = [*repos, *(r for org in orgs if org.is_owned for r in org.repos)]
+        traffic: TrafficCache = await self.async_resource(
+            "traffic", lambda: self._async_sweep_traffic(traffic_repos), {}
+        )
+        # Outside async_resource on purpose: the cache has to be hung off the repositories on
+        # every poll, including the ones where the sweep was not due and fetched nothing.
+        attach_traffic(traffic_repos, traffic)
+
         jobs: tuple[int | None, list[dict[str, Any]]] = await self.async_resource(
             "running_jobs", lambda: self._async_fetch_running_jobs(repos), (None, [])
         )

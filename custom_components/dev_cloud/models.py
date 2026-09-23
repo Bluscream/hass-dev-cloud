@@ -82,6 +82,10 @@ class RepoData:
     # Open dependency vulnerability alerts. GitHub only: GitLab gates the equivalent behind
     # Ultimate and Gitea has none, so elsewhere this stays empty and its sensor is absent.
     security_alerts: list[dict[str, Any]] = field(default_factory=list)
+    # Accumulated view, clone, referrer and path traffic. GitHub serves only a rolling
+    # fourteen-day window and needs push access, so this is a cache built up over time
+    # rather than a copy of one response; see providers/github/traffic.py.
+    traffic: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
 

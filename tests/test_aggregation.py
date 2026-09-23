@@ -307,3 +307,88 @@ def test_alerts_in_uncounted_organisations_are_excluded() -> None:
     assert aggregation.compute_totals(
         _FakeCoordinator(data, include_non_owned_orgs=True)
     ).security_alerts == 1
+
+
+def _with_traffic(full_name: str, views: dict[str, int], clones: dict[str, int]) -> RepoData:
+    repo = _repo(full_name)
+    repo.traffic = {
+        "views": {d: {"count": c, "uniques": max(c // 2, 1)} for d, c in views.items()},
+        "clones": {d: {"count": c, "uniques": max(c // 2, 1)} for d, c in clones.items()},
+    }
+    return repo
+
+
+def test_traffic_totals_sum_the_whole_accumulated_history() -> None:
+    """Lifetime figures, which is exactly what GitHub's own graphs cannot give."""
+    data = DevCloudData(
+        profile=ProfileData(username="Bluscream"),
+        repos=[
+            _with_traffic("Bluscream/a", {"2026-08-01": 40, "2026-09-01": 2}, {"2026-08-01": 4}),
+            _with_traffic("Bluscream/b", {"2026-09-01": 8}, {}),
+        ],
+        collected={"repos", "traffic"},
+    )
+    totals = aggregation.traffic_totals(_FakeCoordinator(data, include_non_owned_orgs=False))
+
+    assert (totals.views, totals.clones) == (50, 4)
+    assert totals.repositories == 2
+    assert totals.days == 4, "three view days plus one clone day"
+
+
+def test_traffic_totals_of_a_repository_never_swept_are_zero_not_missing() -> None:
+    data = DevCloudData(profile=ProfileData(username="x"), repos=[_repo("x/a")])
+    totals = aggregation.traffic_totals(_FakeCoordinator(data, include_non_owned_orgs=False))
+
+    assert (totals.views, totals.clones, totals.repositories) == (0, 0, 0)
+
+
+def test_traffic_obeys_the_same_organisation_rule_as_every_other_total() -> None:
+    """An organisation somebody else owns must not contribute traffic either."""
+    data = DevCloudData(
+        profile=ProfileData(username="Bluscream"),
+        repos=[_with_traffic("Bluscream/own", {"2026-09-01": 10}, {})],
+        orgs=[
+            OrgData(
+                name="EpicGames",
+                is_owned=False,
+                repos=[_with_traffic("EpicGames/ue", {"2026-09-01": 9999}, {})],
+            )
+        ],
+        collected={"repos", "orgs", "traffic"},
+    )
+
+    excluded = aggregation.traffic_totals(_FakeCoordinator(data, include_non_owned_orgs=False))
+    included = aggregation.traffic_totals(_FakeCoordinator(data, include_non_owned_orgs=True))
+
+    assert excluded.views == 10
+    assert included.views == 10009
+
+
+def test_top_referrers_are_combined_across_repositories_and_ranked() -> None:
+    a, b = _repo("x/a"), _repo("x/b")
+    a.traffic = {
+        "referrers": {
+            "google.com": {"count": 10, "uniques": 4, "first_seen": "2026-09-02"},
+            "t.co": {"count": 1, "uniques": 1, "first_seen": "2026-09-05"},
+        }
+    }
+    b.traffic = {
+        "referrers": {"google.com": {"count": 5, "uniques": 2, "first_seen": "2026-08-30"}}
+    }
+    data = DevCloudData(profile=ProfileData(username="x"), repos=[a, b], collected={"traffic"})
+
+    ranked = aggregation.top_referrers(_FakeCoordinator(data, include_non_owned_orgs=False), 10)
+
+    assert [r["referrer"] for r in ranked] == ["google.com", "t.co"]
+    assert ranked[0]["count"] == 15
+    assert ranked[0]["first_seen"] == "2026-08-30", "the earliest sighting anywhere"
+
+
+def test_top_referrers_respect_the_attribute_limit() -> None:
+    repo = _repo("x/a")
+    repo.traffic = {
+        "referrers": {f"site{i}.example": {"count": i, "uniques": 1} for i in range(30)}
+    }
+    data = DevCloudData(profile=ProfileData(username="x"), repos=[repo], collected={"traffic"})
+
+    assert len(aggregation.top_referrers(_FakeCoordinator(data, include_non_owned_orgs=False), 10)) == 10

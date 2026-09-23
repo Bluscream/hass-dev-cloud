@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -77,6 +78,15 @@ class DevCloudAuthError(DevCloudProviderError):
 
 class DevCloudNotFoundError(DevCloudProviderError):
     """Raised when a user or resource is not found."""
+
+
+class DevCloudForbiddenError(DevCloudAuthError):
+    """Raised when the credentials are valid but not permitted for this resource.
+
+    A subclass, so every existing `except DevCloudAuthError` keeps catching it. It exists so
+    a per-repository endpoint that needs push access can remember which repositories it may
+    not read, instead of concluding the whole token is bad the first time one refuses.
+    """
 
 
 class DevCloudRateLimitError(DevCloudProviderError):
@@ -182,6 +192,17 @@ class BaseDevCloudProvider(ABC):
         if detail:
             self._resource_values["repo_detail"] = detail
 
+        # Traffic is an accumulated cache rather than a copy of one response, so losing it
+        # on reload would throw away history GitHub itself no longer holds. Organisation
+        # repositories are swept too, so both sides are rebuilt into the one resource.
+        traffic = {
+            repo.full_name: repo.traffic
+            for repo in (*data.repos, *(r for org in data.orgs for r in org.repos))
+            if repo.traffic
+        }
+        if traffic:
+            self._resource_values["traffic"] = traffic
+
         org_detail = {
             repo.full_name: {
                 "releases": repo.releases,
@@ -283,10 +304,14 @@ class BaseDevCloudProvider(ABC):
                     "x-ratelimit-remaining"
                 )
                 if remaining == "0":
+                    self._observe_exhausted_quota(resp_headers)
                     raise DevCloudRateLimitError("Rate limit exceeded")
                 text = await response.text()
                 if "rate limit" in text.lower():
+                    self._observe_exhausted_quota(resp_headers)
                     raise DevCloudRateLimitError("Rate limit exceeded")
+                if response.status == 403:
+                    raise DevCloudForbiddenError(f"Forbidden: {endpoint_url}")
                 raise DevCloudAuthError(f"Auth error: {response.status}")
 
             if response.status == 404:
@@ -300,6 +325,22 @@ class BaseDevCloudProvider(ABC):
                 self._cached_responses[cache_key] = data
 
             return data, resp_headers
+
+    def _observe_exhausted_quota(self, headers: Mapping[str, str]) -> None:
+        """Tell the scheduler the allowance is spent, from the response that said so.
+
+        Only successful responses used to reach `observe_rate_limit`, so the one response
+        that actually proves the quota is gone — the refusal — was the one the scheduler
+        never saw. Every resource would then keep its base interval and retry into a wall,
+        which is exactly what prolongs the block. With the reset recorded, `effective_interval`
+        holds everything off until the window turns over.
+        """
+        reset_raw = headers.get("X-RateLimit-Reset") or headers.get("x-ratelimit-reset")
+        reset: float | None = None
+        with contextlib.suppress(TypeError, ValueError):
+            if reset_raw is not None:
+                reset = float(reset_raw)
+        self.scheduler.observe_rate_limit(0, reset)
 
     async def async_get_all_pages(
         self,

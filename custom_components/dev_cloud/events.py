@@ -77,6 +77,9 @@ THING_PULL: Final = "pull"
 THING_ORG: Final = "organization"
 THING_SECURITY: Final = "security"
 THING_NOTIFICATION: Final = "notification"
+THING_VIEW: Final = "view"
+THING_CLONE: Final = "clone"
+THING_REFERRER: Final = "referrer"
 
 #: Repository fields worth a line when they change. Stars, forks and watchers are absent on
 #: purpose: each gets its own numeric change below, and listing them here too would report
@@ -376,6 +379,7 @@ def _one_repo(name: str, old: Item, new: Item) -> list[Change]:
     changes += _release_changes(name, old, new)
     changes += _security_changes(name, old, new)
     changes += _download_changes(name, old, new)
+    changes += _traffic_changes(name, old, new)
     changes += _ref_changes(name, old, new, "branches", THING_BRANCH, "branch")
     changes += _ref_changes(name, old, new, "tags", THING_TAG, "tag")
     changes += _thread_changes(name, old, new, "issues", THING_ISSUE, "issue")
@@ -509,6 +513,67 @@ def _download_changes(repository: str, old: Item, new: Item) -> list[Change]:
             },
         }
     ]
+
+
+def _traffic_series_total(traffic: Item, series: str) -> int:
+    """Lifetime total of one accumulated daily series."""
+    return sum(int(day.get("count", 0) or 0) for day in (traffic.get(series) or {}).values())
+
+
+def _traffic_changes(repository: str, old: Item, new: Item) -> list[Change]:
+    """Views, clones and referring sites, from the accumulated traffic cache.
+
+    Only fires for a repository the sweep has visited at least twice. The first visit brings
+    back fourteen days at once, and reporting that as a delta would announce a fortnight of
+    history as if it had just happened — the same rule the module already follows for an
+    account it has never seen before.
+    """
+    was, now = old.get("traffic") or {}, new.get("traffic") or {}
+    if not was or not now:
+        return []
+
+    url = str(new.get("url") or old.get("url") or "")
+    changes: list[Change] = []
+
+    for series, thing in (("views", THING_VIEW), ("clones", THING_CLONE)):
+        before, after = _traffic_series_total(was, series), _traffic_series_total(now, series)
+        if after <= before:
+            continue
+        changes.append(
+            {
+                "kind": f"new_{series}",
+                "thing": thing,
+                "subject": repository,
+                "repository": repository,
+                "url": url,
+                "old": before,
+                "new": after,
+                "delta": after - before,
+                "first": _first(before, after),
+            }
+        )
+
+    # A referring site that has never appeared before. GitHub only ever shows the top ten of
+    # a rolling window, so "not in the cache" is the only way to tell a new one from a
+    # familiar one that had dropped out and come back — which is what first_seen is for.
+    was_referrers = was.get("referrers") or {}
+    now_referrers = now.get("referrers") or {}
+    for name in sorted(now_referrers.keys() - was_referrers.keys()):
+        entry = now_referrers[name]
+        changes.append(
+            {
+                "kind": "new_referrer",
+                "thing": THING_REFERRER,
+                "subject": name,
+                "repository": repository,
+                "url": url,
+                "new": entry,
+                "delta": int(entry.get("count", 0) or 0),
+                "first": True,
+            }
+        )
+
+    return changes
 
 
 def _delta(gain: dict[str, Any]) -> int:

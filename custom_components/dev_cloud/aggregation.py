@@ -157,6 +157,75 @@ def compute_totals(coordinator: DevCloudCoordinator) -> Totals:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class TrafficTotals:
+    """Lifetime traffic across the repositories that count towards this entry.
+
+    Summed from the accumulated daily buckets rather than from one API response, so these
+    keep growing after GitHub's own graphs have forgotten — which is why the cache exists.
+    """
+
+    views: int = 0
+    clones: int = 0
+    unique_views: int = 0
+    unique_clones: int = 0
+    #: Repositories with any traffic history at all, which is how much of the rotating
+    #: sweep has been round so far.
+    repositories: int = 0
+    #: Distinct days on record, counted per repository, so a figure that only ever grows.
+    days: int = 0
+
+
+def _series_total(repos: list[RepoData], series: str) -> tuple[int, int]:
+    """Count and uniques summed over one accumulated daily series."""
+    count = uniques = 0
+    for repo in repos:
+        for day in (repo.traffic.get(series) or {}).values():
+            count += int(day.get("count", 0) or 0)
+            uniques += int(day.get("uniques", 0) or 0)
+    return count, uniques
+
+
+def traffic_totals(coordinator: DevCloudCoordinator) -> TrafficTotals:
+    """Add up every repository's accumulated view and clone history."""
+    repos = [repo for repo in counted_repos(coordinator) if repo.traffic]
+    views, unique_views = _series_total(repos, "views")
+    clones, unique_clones = _series_total(repos, "clones")
+
+    return TrafficTotals(
+        views=views,
+        clones=clones,
+        unique_views=unique_views,
+        unique_clones=unique_clones,
+        repositories=len(repos),
+        days=sum(
+            len(repo.traffic.get(series) or {}) for repo in repos for series in ("views", "clones")
+        ),
+    )
+
+
+def top_referrers(coordinator: DevCloudCoordinator, limit: int) -> list[dict[str, Any]]:
+    """The busiest referring sites across every repository, most recent window first.
+
+    Counts describe GitHub's rolling fourteen-day window, so they are summed across
+    repositories but never across time — adding successive windows would count one visit
+    once per sweep.
+    """
+    combined: dict[str, dict[str, Any]] = {}
+    for repo in counted_repos(coordinator):
+        for name, entry in (repo.traffic.get("referrers") or {}).items():
+            into = combined.setdefault(
+                name, {"referrer": name, "count": 0, "uniques": 0, "first_seen": ""}
+            )
+            into["count"] += int(entry.get("count", 0) or 0)
+            into["uniques"] += int(entry.get("uniques", 0) or 0)
+            seen = str(entry.get("first_seen") or "")
+            if not into["first_seen"] or (seen and seen < into["first_seen"]):
+                into["first_seen"] = seen
+
+    return sorted(combined.values(), key=lambda r: int(r["count"]), reverse=True)[:limit]
+
+
 def counted_security_alerts(coordinator: DevCloudCoordinator) -> list[dict[str, Any]]:
     """Open vulnerability alerts across the repositories that count for this entry."""
     return [alert for repo in counted_repos(coordinator) for alert in repo.security_alerts]

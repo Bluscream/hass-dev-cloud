@@ -31,8 +31,14 @@ from . import DevCloudConfigEntry
 from .aggregation import (
     collection_total,
     counted_issues,
+    top_referrers,
+    traffic_totals,
 )
-from .const import NOTIFICATION_ATTRIBUTE_LIMIT, PLATFORM_ICONS
+from .const import (
+    NOTIFICATION_ATTRIBUTE_LIMIT,
+    PLATFORM_ICONS,
+    TRAFFIC_REFERRER_ATTRIBUTE_LIMIT,
+)
 from .coordinator import DevCloudCoordinator
 from .entity import DevCloudBaseEntity
 from .models import NotificationData
@@ -609,6 +615,65 @@ class DevCloudRunningJobsSensor(DevCloudBaseEntity, SensorEntity):
         }
 
 
+class _DevCloudTrafficSensor(DevCloudBaseEntity, SensorEntity):
+    """Shared base for the two accumulated traffic series.
+
+    TOTAL rather than TOTAL_INCREASING, for the same reason as downloads: the history is
+    trimmed once it passes the retention limit, and TOTAL_INCREASING would read that fall as
+    a counter reset and add the whole figure again as if it were new traffic.
+    """
+
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 0
+
+    #: Which accumulated series this sensor reports, set by each subclass.
+    _series: str = ""
+
+    @property
+    def native_value(self) -> StateType:
+        if not self.coordinator.data:
+            return None
+        return int(getattr(traffic_totals(self.coordinator), self._series))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self.coordinator.data:
+            return {}
+        totals = traffic_totals(self.coordinator)
+        return {
+            f"unique_{self._series}": getattr(totals, f"unique_{self._series}"),
+            # How far the rotating sweep has got, which is the honest caveat on the figure
+            # above: repositories it has not reached yet contribute nothing.
+            "repositories_with_traffic": totals.repositories,
+            "days_recorded": totals.days,
+            "top_referrers": top_referrers(self.coordinator, TRAFFIC_REFERRER_ATTRIBUTE_LIMIT),
+        }
+
+
+class DevCloudTrafficViewsSensor(_DevCloudTrafficSensor):
+    """Accumulated repository views, past the fourteen days GitHub keeps."""
+
+    _attr_icon = "mdi:chart-line"
+    _attr_native_unit_of_measurement = "views"
+    _series = "views"
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "traffic_views")
+        self._attr_name = "Views"
+
+
+class DevCloudTrafficClonesSensor(_DevCloudTrafficSensor):
+    """Accumulated repository clones, past the fourteen days GitHub keeps."""
+
+    _attr_icon = "mdi:content-copy"
+    _attr_native_unit_of_measurement = "clones"
+    _series = "clones"
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "traffic_clones")
+        self._attr_name = "Clones"
+
+
 class DevCloudLastUpdatedSensor(DevCloudBaseEntity, SensorEntity):
     """When the provider last returned a complete result.
 
@@ -707,6 +772,9 @@ _OPTIONAL_SENSORS: tuple[
     ),
     (DevCloudPackagesSensor, lambda c: _collected(c, "packages")),
     (DevCloudRunningJobsSensor, lambda c: _collected(c, "running_jobs")),
+    # Traffic needs push access and a token, so most platforms never collect it.
+    (DevCloudTrafficViewsSensor, lambda c: _collected(c, "traffic")),
+    (DevCloudTrafficClonesSensor, lambda c: _collected(c, "traffic")),
     # Only GitHub reports these, so elsewhere the resource is never collected.
     (DevCloudSecurityAlertsSensor, lambda c: _collected(c, "repo_detail")),
 )

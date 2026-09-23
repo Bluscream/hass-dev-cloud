@@ -496,6 +496,78 @@ def test_a_repository_moving_between_the_account_and_an_org_is_not_a_delete() ->
     assert "repo_removed" not in fired
 
 
+# --- traffic --------------------------------------------------------------------------
+
+
+def _repo_with_traffic(
+    full_name: str,
+    views: dict[str, int] | None = None,
+    clones: dict[str, int] | None = None,
+    referrers: tuple[str, ...] = (),
+) -> RepoData:
+    repo = _repo(full_name)
+    repo.traffic = {
+        "views": {d: {"count": c, "uniques": 1} for d, c in (views or {}).items()},
+        "clones": {d: {"count": c, "uniques": 1} for d, c in (clones or {}).items()},
+        "referrers": {r: {"count": 3, "uniques": 2, "first_seen": "2026-09-01"} for r in referrers},
+        "fetched_at": "2026-09-23T00:00:00+00:00",
+    }
+    return repo
+
+
+def test_views_and_clones_are_reported_as_signed_deltas() -> None:
+    before = _snap(repos=[_repo_with_traffic("o/a", views={"2026-09-21": 10}, clones={})])
+    after = _snap(
+        repos=[
+            _repo_with_traffic(
+                "o/a", views={"2026-09-21": 10, "2026-09-22": 5}, clones={"2026-09-22": 2}
+            )
+        ]
+    )
+    result = events.diff(before, after)
+
+    assert _one(result, "new_views")["delta"] == 5
+    assert _one(result, "new_views")["thing"] == events.THING_VIEW
+    assert _one(result, "new_clones")["delta"] == 2
+    assert _one(result, "new_clones")["first"] is True, "the repository's first ever clone"
+
+
+def test_the_first_sweep_of_a_repository_is_a_baseline_not_news() -> None:
+    """One sweep brings back fourteen days; reporting that as a delta announces a fortnight
+    of history as if it had just happened."""
+    before = _snap(repos=[_repo("o/a")])
+    after = _snap(repos=[_repo_with_traffic("o/a", views={"2026-09-10": 400})])
+
+    assert "new_views" not in _kinds(events.diff(before, after))
+
+
+def test_a_referring_site_never_seen_before_is_its_own_change() -> None:
+    before = _snap(repos=[_repo_with_traffic("o/a", views={"2026-09-21": 1}, referrers=("google.com",))])
+    after = _snap(
+        repos=[
+            _repo_with_traffic(
+                "o/a", views={"2026-09-21": 1}, referrers=("google.com", "news.ycombinator.com")
+            )
+        ]
+    )
+    change = _one(events.diff(before, after), "new_referrer")
+
+    assert change["subject"] == "news.ycombinator.com"
+    assert change["thing"] == events.THING_REFERRER
+    assert change["first"] is True
+    assert change["repository"] == "o/a"
+
+
+def test_a_familiar_referring_site_is_not_announced_again() -> None:
+    repos = [_repo_with_traffic("o/a", views={"2026-09-21": 1}, referrers=("google.com",))]
+    assert "new_referrer" not in _kinds(events.diff(_snap(repos=repos), _snap(repos=repos)))
+
+
+def test_traffic_that_did_not_move_is_silent() -> None:
+    repos = [_repo_with_traffic("o/a", views={"2026-09-21": 10}, clones={"2026-09-21": 2})]
+    assert not events.diff(_snap(repos=repos), _snap(repos=repos))
+
+
 # --- chunking -------------------------------------------------------------------------
 
 
