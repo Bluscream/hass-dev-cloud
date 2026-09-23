@@ -138,9 +138,10 @@ allowance is gone, so every resource waits for the reset.
 
 ---
 
-## The browsable index
+## The browsable page
 
-`/local/dev/<platform>/index.html` renders the same data for a person rather than a program:
+`/local/dev/<platform>/<account>.html` renders the same data for a person rather than a
+program — `bluscream.html` sits beside `bluscream.json`, carrying the same name:
 profile, headline totals, snapshot and resource-schedule metadata, and top-25 leaderboards —
 repositories by stars, downloads, releases, assets, forks, watchers, issues, PRs and
 advisories; organisations by repository count and stars; releases and individual assets by
@@ -148,9 +149,9 @@ downloads; views, clones and referring sites; packages and gists.
 
 One self-contained file with no external requests: `/local` is served by Home Assistant
 itself, often on a LAN with no route out, and a page about your own data should not need
-somebody else's CDN to render. Accounts are discovered from the directory, so a second
-account on the same platform appears as a switcher with no code change. It is rewritten only
-when it would actually differ.
+somebody else's CDN to render. Sibling accounts are discovered from the directory and linked
+as real URLs, so a second account on the same platform gets its own page and shows up in the
+switcher with no code change. Each page is rewritten only when it would actually differ.
 
 ---
 

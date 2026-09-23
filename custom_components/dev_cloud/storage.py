@@ -37,12 +37,13 @@ WWW_SUBDIR = "dev"
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^a-z0-9._-]+")
 
-# The browsable index written beside the snapshots in each platform directory. Shipped as a
-# real .html asset rather than a Python string: it is a page, editable and viewable as one,
-# and a 400-line heredoc in this module would be neither.
-_INDEX_TEMPLATE = Path(__file__).parent / "www" / "index.html"
-_INDEX_NAME = "index.html"
-#: Replaced with the JSON array of account slugs found in the directory.
+# The browsable page written beside each account's snapshot. Shipped as a real .html asset
+# rather than a Python string: it is a page, editable and viewable as one, and a 400-line
+# heredoc in this module would be neither.
+_PAGE_TEMPLATE = Path(__file__).parent / "www" / "account.html"
+#: Replaced with this page's own account slug, so it knows which snapshot to load.
+_ACCOUNT_PLACEHOLDER = "__ACCOUNT__"
+#: Replaced with every account slug in the directory, for links to the sibling pages.
 _ACCOUNTS_PLACEHOLDER = "__ACCOUNTS__"
 
 # `/local` is served without authentication, so this file is readable by anyone who can
@@ -228,15 +229,27 @@ def _account_slugs(directory: Path) -> list[str]:
     )
 
 
-def _write_index(directory: Path) -> None:
-    """Refresh a platform's index page. Runs in an executor — never call from the loop."""
-    page = _INDEX_TEMPLATE.read_text(encoding="utf-8").replace(
-        _ACCOUNTS_PLACEHOLDER, json.dumps(_account_slugs(directory))
-    )
-    target = directory / _INDEX_NAME
+def build_page_url(platform: str, account: str) -> URL:
+    """Return the public ``/local`` URL of an account's browsable page."""
+    return URL("/local") / WWW_SUBDIR / platform / f"{slugify_account(account)}.html"
 
-    # Only rewritten when it would actually differ. The page is static apart from the
-    # account list, so writing it on every poll would churn the disk and bust every
+
+def _write_page(directory: Path, slug: str) -> None:
+    """Refresh one account's page. Runs in an executor — never call from the loop.
+
+    Named after the account rather than being a per-directory index, so the page sits
+    beside the snapshot it reads and carries the same name: ``bluscream.html`` next to
+    ``bluscream.json``.
+    """
+    page = (
+        _PAGE_TEMPLATE.read_text(encoding="utf-8")
+        .replace(_ACCOUNTS_PLACEHOLDER, json.dumps(_account_slugs(directory)))
+        .replace(_ACCOUNT_PLACEHOLDER, json.dumps(slug))
+    )
+    target = directory / f"{slug}.html"
+
+    # Only rewritten when it would actually differ. The page is static apart from the two
+    # substituted names, so writing it on every poll would churn the disk and bust every
     # browser cache to produce a byte-identical file.
     with contextlib.suppress(OSError):
         if target.read_text(encoding="utf-8") == page:
@@ -246,17 +259,17 @@ def _write_index(directory: Path) -> None:
     target.write_text(page, encoding="utf-8")
 
 
-async def async_write_index(hass: HomeAssistant, platform: str) -> bool:
-    """Write the browsable index for one platform. Returns whether it succeeded.
+async def async_write_page(hass: HomeAssistant, platform: str, account: str) -> bool:
+    """Write one account's browsable page. Returns whether it succeeded.
 
     Never raises: like the snapshot dump, a page that failed to render must not fail a poll.
     """
-    directory = _build_json_path(hass, platform, "unused").parent
+    path = _build_json_path(hass, platform, account)
     try:
-        await hass.async_add_executor_job(_write_index, directory)
+        await hass.async_add_executor_job(_write_page, path.parent, path.stem)
     except Exception as err:
         # Broad by design: this is a convenience page, not part of the data path.
-        _LOGGER.warning("Could not write the index page for %s in %s: %s", platform, directory, err)
+        _LOGGER.warning("Could not write the page for %s:%s: %s", platform, account, err)
         return False
     return True
 

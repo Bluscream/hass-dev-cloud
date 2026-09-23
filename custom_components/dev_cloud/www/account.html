@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Developer Cloud</title>
 <!--
-  Served from /local/dev/<platform>/index.html, beside the account snapshots it reads.
+  Served from /local/dev/<platform>/<account>.html, beside the snapshot it reads: this file
+  is bluscream.html next to bluscream.json.
 
-  Written by storage.py, which substitutes the account list below; everything else is
-  static. The page is entirely dynamic: it fetches <account>.json at load and builds every
-  table and chart from it in the browser, so a fresh snapshot needs no new HTML.
+  Written by storage.py, which substitutes the two account names below; everything else is
+  static. The page is entirely dynamic: it fetches its own <account>.json at load and builds
+  every table and chart from it in the browser, so a fresh snapshot needs no new HTML.
 
   Deliberately one self-contained file with no external requests: /local is served by Home
   Assistant itself, often on a LAN with no route out, and a page about your own data should
@@ -94,11 +95,13 @@
   svg.chart { display: block; width: 100%; height: auto; }
 
   nav.accounts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
-  nav.accounts button, button.action {
+  nav.accounts a.pill, button.action {
     font: inherit; padding: 5px 12px; border-radius: 999px; cursor: pointer;
     border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    text-decoration: none; line-height: 1.4;
   }
-  nav.accounts button[aria-current="true"] { border-color: var(--accent); color: var(--accent); }
+  nav.accounts a.pill:hover { text-decoration: none; border-color: var(--accent); }
+  nav.accounts a.pill[aria-current="true"] { border-color: var(--accent); color: var(--accent); }
   .status { color: var(--muted); font-size: 13px; margin-top: 6px; }
   .error { color: var(--warn); }
   footer { margin-top: 40px; font-size: 12px; color: var(--muted); }
@@ -121,7 +124,9 @@
 <script>
 "use strict";
 
-/** Substituted by storage.py from the snapshots actually present in this directory. */
+/** This page's own account, substituted by storage.py. It is also this file's name. */
+const ACCOUNT = __ACCOUNT__;
+/** Every account in this directory, for links to the sibling pages. */
 const ACCOUNTS = __ACCOUNTS__;
 /** How many rows each leaderboard shows. */
 const TOP_N = 25;
@@ -138,7 +143,14 @@ const append = (node, kids) => {
 };
 const el = (tag, props = {}, ...kids) => {
   const { dataset, ...rest } = props;
-  const node = Object.assign(document.createElement(tag), rest);
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(rest)) {
+    // Hyphenated names are attributes, not properties. Object.assign would hang
+    // `aria-current` off the element as a plain JS property, where CSS and assistive
+    // technology never see it - it fails silently and looks like it worked.
+    if (key.includes("-")) node.setAttribute(key, String(value));
+    else Object.assign(node, { [key]: value });
+  }
   if (dataset) Object.assign(node.dataset, dataset);
   return append(node, kids);
 };
@@ -738,13 +750,7 @@ function render(data) {
   tick();
 }
 
-let currentSlug = null;
-
 async function show(slug) {
-  currentSlug = slug;
-  for (const button of document.querySelectorAll("nav.accounts button[data-slug]")) {
-    button.setAttribute("aria-current", String(button.dataset.slug === slug));
-  }
   try {
     // Cache-busted: the snapshot is rewritten every poll and a stale page is worse than a
     // slow one, especially behind Home Assistant's own long static-asset caching.
@@ -761,27 +767,36 @@ async function show(slug) {
 }
 
 function start() {
-  if (!ACCOUNTS.length) {
-    $("#app").replaceChildren(el("p", { className: "status" }, "No account snapshots in this directory yet."));
+  if (!ACCOUNT) {
+    $("#app").replaceChildren(
+      el("p", { className: "status error" }, "This page was written without an account name."),
+    );
     return;
   }
+  // Real links rather than in-page switching: each account is its own file now, so a
+  // sibling has a URL worth having in the address bar and worth bookmarking.
   const nav = $("#accounts");
   if (ACCOUNTS.length > 1) {
     for (const slug of [...ACCOUNTS].reverse()) {
-      nav.prepend(el("button", { type: "button", dataset: { slug }, onclick: () => show(slug) }, slug));
+      nav.prepend(
+        el("a", {
+          className: "pill",
+          href: `./${encodeURIComponent(slug)}.html`,
+          "aria-current": String(slug === ACCOUNT),
+        }, slug),
+      );
     }
   }
-  $("#refresh").onclick = () => currentSlug && show(currentSlug);
+  $("#refresh").onclick = () => show(ACCOUNT);
 
   setInterval(tick, 1000);
   // Only while the tab is actually being looked at: the snapshot runs to megabytes and
   // re-pulling it into a background tab every five minutes is pure waste.
   setInterval(() => {
-    if (document.visibilityState === "visible" && currentSlug) show(currentSlug);
+    if (document.visibilityState === "visible") show(ACCOUNT);
   }, REFRESH_MS);
 
-  const wanted = new URLSearchParams(location.search).get("account");
-  show(ACCOUNTS.includes(wanted) ? wanted : ACCOUNTS[0]);
+  show(ACCOUNT);
 }
 
 start();

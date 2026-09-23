@@ -38,7 +38,7 @@ from .models import DevCloudData
 from .providers import DevCloudProviderError, get_provider
 from .storage import (
     async_load_dev_cloud_json,
-    async_write_index,
+    async_write_page,
     async_write_snapshot,
     build_json_url,
     build_snapshot,
@@ -269,7 +269,8 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         self._previous = payload
 
         await async_write_snapshot(self.hass, self.platform_id, self.account_name, payload)
-        # After the snapshot, so a first-ever poll writes an index that already lists it.
-        await async_write_index(self.hass, self.platform_id)
+        # After the snapshot, so a first-ever poll writes a page that already lists it among
+        # its siblings.
+        await async_write_page(self.hass, self.platform_id, self.account_name)
 
         return data
