@@ -79,6 +79,7 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
             instance_url=self.instance_url,
             api_token=self.api_token,
             detailed=self.detailed_results,
+            include_non_owned_orgs=self.include_non_owned_orgs,
         )
 
         # Public URL of this account's full JSON snapshot, exposed on every sensor so the

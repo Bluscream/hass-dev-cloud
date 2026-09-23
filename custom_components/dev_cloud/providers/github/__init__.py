@@ -100,8 +100,16 @@ class GitHubProvider(BaseDevCloudProvider):
         base_url: str | None = None,
         api_token: str | None = None,
         detailed: bool = True,
+        include_non_owned_orgs: bool = True,
     ) -> None:
-        super().__init__(session, account_name, base_url, api_token, detailed)
+        super().__init__(
+            session,
+            account_name,
+            base_url,
+            api_token,
+            detailed,
+            include_non_owned_orgs=include_non_owned_orgs,
+        )
         # Filled by the profile fetch; surfaced only in summary mode.
         self._reported_totals: dict[str, int] = {}
         self._api = GitHubAPI(
@@ -576,14 +584,17 @@ class GitHubProvider(BaseDevCloudProvider):
         repos: list[RepoData] = await self.async_resource("repos", self._async_fetch_repos, [])
         orgs: list[OrgData] = await self.async_resource("orgs", self._async_fetch_orgs, [])
 
-        # Attach each organisation's repositories. Whether they feed the account totals is
-        # decided per entry by CONF_INCLUDE_NON_OWNED_ORGS, applied in sensor.py — the
-        # snapshot always carries the full picture.
+        # Attach each organisation's repositories. When include_non_owned_orgs is False,
+        # non-owned organisations are skipped from repository and release walks to save API quota.
+        target_orgs = orgs if self.include_non_owned_orgs else [o for o in orgs if o.is_owned]
         org_repos: dict[str, list[RepoData]] = await self.async_resource(
-            "org_repos", lambda: self._async_fetch_org_repos(orgs), {}
+            "org_repos", lambda: self._async_fetch_org_repos(target_orgs), {}
         )
         for org in orgs:
-            org.repos = org_repos.get(org.name, org.repos)
+            if not (self.include_non_owned_orgs or org.is_owned):
+                org.repos = []
+            else:
+                org.repos = org_repos.get(org.name, org.repos)
         pastes: list[PasteData] = await self.async_resource("pastes", self._async_fetch_pastes, [])
         notifications: list[NotificationData] = await self.async_resource(
             "notifications", self._async_fetch_notifications, []
@@ -601,10 +612,12 @@ class GitHubProvider(BaseDevCloudProvider):
         sponsors_count, sponsoring_count = sponsors
         repo_detail: RepoDetail = await self.async_resource("repo_detail", self._async_releases, {})
         org_detail: RepoDetail = await self.async_resource(
-            "org_repo_detail", lambda: async_fetch_org_releases(self._async_graphql, orgs), {}
+            "org_repo_detail",
+            lambda: async_fetch_org_releases(self._async_graphql, target_orgs),
+            {},
         )
         self._attach_detail(repos, repo_detail)
-        for org in orgs:
+        for org in target_orgs:
             self._attach_detail(org.repos, org_detail)
         jobs: tuple[int | None, list[dict[str, Any]]] = await self.async_resource(
             "running_jobs", lambda: self._async_fetch_running_jobs(repos), (None, [])

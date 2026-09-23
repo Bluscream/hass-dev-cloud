@@ -102,6 +102,7 @@ class BaseDevCloudProvider(ABC):
         base_url: str | None = None,
         api_token: str | None = None,
         detailed: bool = True,
+        include_non_owned_orgs: bool = True,
     ) -> None:
         self.session = session
         self.account_name = account_name.strip()
@@ -112,6 +113,8 @@ class BaseDevCloudProvider(ABC):
         # False asks the provider for summary totals instead of enumerating every item.
         # Which endpoints that spares is provider-specific, so each one decides.
         self.detailed = detailed
+        # When False, the provider skips enumerating repositories and releases for non-owned orgs.
+        self.include_non_owned_orgs = include_non_owned_orgs
         # In-memory conditional request caching & TTL caching
         self._etags: dict[str, str] = {}
         self._cached_responses: dict[str, Any] = {}

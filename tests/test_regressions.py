@@ -389,3 +389,51 @@ def test_gitlab_user_id_restored_from_snapshot() -> None:
     }
     provider.restore(snapshot)
     assert provider._user_id == 845211
+
+
+async def test_non_owned_orgs_skipped_when_option_disabled() -> None:
+    """When include_non_owned_orgs is False, non-owned orgs must not be queried for repos or releases."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from dev_cloud.models import OrgData
+    from dev_cloud.providers.github import GitHubProvider
+
+    provider = GitHubProvider(
+        session=MagicMock(),
+        account_name="bluscream",
+        include_non_owned_orgs=False,
+    )
+    assert provider.include_non_owned_orgs is False
+
+    orgs = [
+        OrgData(name="EpicGames", is_owned=False),
+        OrgData(name="MyOrg", is_owned=True),
+    ]
+    provider._async_fetch_orgs = AsyncMock(return_value=orgs)  # type: ignore[method-assign]
+    provider._async_fetch_repos = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    provider._async_fetch_profile = AsyncMock(return_value=MagicMock(username="bluscream"))  # type: ignore[method-assign]
+    provider._async_fetch_pastes = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    provider._async_fetch_notifications = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    provider._async_fetch_sponsors = AsyncMock(return_value=(None, None))  # type: ignore[method-assign]
+    provider._async_fetch_search = AsyncMock(return_value={})  # type: ignore[method-assign]
+    provider._async_releases = AsyncMock(return_value={})  # type: ignore[method-assign]
+    provider._async_fetch_running_jobs = AsyncMock(return_value=(None, []))  # type: ignore[method-assign]
+
+    queried_orgs: list[str] = []
+
+    async def fake_fetch_org_repos(target_orgs: list[OrgData]) -> dict[str, list[Any]]:
+        for o in target_orgs:
+            queried_orgs.append(o.name)
+        return {o.name: [] for o in target_orgs}
+
+    provider._async_fetch_org_repos = fake_fetch_org_repos  # type: ignore[method-assign]
+
+    data = await provider.async_fetch()
+    assert "EpicGames" not in queried_orgs
+    assert "MyOrg" in queried_orgs
+    # In data.orgs, both orgs exist for the count sensor, but EpicGames has empty repos
+    assert len(data.orgs) == 2
+    epic = next(o for o in data.orgs if o.name == "EpicGames")
+    assert epic.repos == []
+
+

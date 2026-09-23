@@ -43,8 +43,16 @@ class DockerHubProvider(BaseDevCloudProvider):
         base_url: str | None = None,
         api_token: str | None = None,
         detailed: bool = True,
+        include_non_owned_orgs: bool = True,
     ) -> None:
-        super().__init__(session, account_name, base_url, api_token, detailed)
+        super().__init__(
+            session,
+            account_name,
+            base_url,
+            api_token,
+            detailed,
+            include_non_owned_orgs=include_non_owned_orgs,
+        )
         self._jwt_token: str | None = None
 
     async def _async_ensure_jwt_token(self) -> str | None:
