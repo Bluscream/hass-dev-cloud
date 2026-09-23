@@ -27,7 +27,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the DevCloud button platform."""
-    async_add_entities([DevCloudForceRefreshButton(entry.runtime_data)])
+    coordinator = entry.runtime_data
+    async_add_entities(
+        [DevCloudForceRefreshButton(coordinator), DevCloudStopScrapingButton(coordinator)]
+    )
 
 
 class DevCloudForceRefreshButton(DevCloudBaseEntity, ButtonEntity):
@@ -61,3 +64,28 @@ class DevCloudForceRefreshButton(DevCloudBaseEntity, ButtonEntity):
         that. Forcing a refresh is meant to skip the pacing, not the ceiling.
         """
         await self.coordinator.async_force_refresh()
+
+
+class DevCloudStopScrapingButton(DevCloudBaseEntity, ButtonEntity):
+    """Cancel the scrape that is running right now."""
+
+    _attr_icon = "mdi:cloud-cancel-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: DevCloudCoordinator) -> None:
+        super().__init__(coordinator, "stop_scraping")
+        self._attr_name = "Force Stop Scraping"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Whether there is currently anything to stop."""
+        return {"scraping": self.coordinator.is_scraping}
+
+    async def async_press(self) -> None:
+        """Cancel the in-flight scrape, and everything running underneath it.
+
+        Harmless when nothing is running. Nothing already fetched is discarded: each
+        resource is stored the moment it succeeds, so the next poll picks up where this one
+        was interrupted rather than starting over.
+        """
+        await self.coordinator.async_stop_scraping()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from datetime import UTC, datetime, timedelta
@@ -103,6 +104,15 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         # data was actually gathered rather than blank until the next poll.
         self.last_updated: datetime | None = None
 
+        # The in-flight provider fetch, held so it can be cancelled. The coordinator's own
+        # update method is not cancellable from outside, so the fetch runs as its own task
+        # and this is the handle on it.
+        self._fetch_task: asyncio.Task[DevCloudData] | None = None
+        # Set only by async_stop_scraping, so a cancellation this class asked for can be
+        # told apart from Home Assistant shutting the coordinator down - one becomes a
+        # failed update, the other has to propagate.
+        self._stop_requested = False
+
         # The previous poll's serialised snapshot, diffed against the next one. Serialised
         # rather than live, because the provider mutates its cached objects in place — a
         # reference to the previous result would end up comparing objects against themselves.
@@ -144,6 +154,37 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
                     "changes": batch,
                 },
             )
+
+    @property
+    def is_scraping(self) -> bool:
+        """Whether a fetch is in flight right now."""
+        return self._fetch_task is not None and not self._fetch_task.done()
+
+    async def async_stop_scraping(self) -> bool:
+        """Cancel the in-flight scrape. Returns whether there was one to cancel.
+
+        Cancelling the outer task propagates into whatever it is awaiting, so every
+        concurrent sub-request underneath it - the organisation walks, the traffic sweep,
+        the running-jobs fan-out - goes down with it rather than being left to finish
+        against an API nobody is waiting on any more.
+
+        Work already completed is not thrown away: each resource stores its value the
+        moment it succeeds, so a cancelled scrape keeps whatever it had got through and the
+        next poll resumes from there.
+        """
+        task = self._fetch_task
+        if task is None or task.done():
+            _LOGGER.debug("No scrape in flight for %s:%s", self.platform_id, self.account_name)
+            return False
+
+        _LOGGER.info(
+            "Cancelling the in-flight scrape of %s:%s on request",
+            self.platform_id,
+            self.account_name,
+        )
+        self._stop_requested = True
+        task.cancel()
+        return True
 
     async def async_force_refresh(self) -> None:
         """Clear every resource's schedule and poll now.
@@ -188,12 +229,27 @@ class DevCloudCoordinator(DataUpdateCoordinator[DevCloudData]):
         if not self._restored:
             await self._async_restore()
 
+        # Run as a task rather than awaiting the coroutine directly, so the Force Stop
+        # button has something to cancel. The reference is held for the duration; a bare
+        # create_task can be collected mid-flight.
+        self._fetch_task = asyncio.create_task(self.provider.async_fetch())
         try:
-            data = await self.provider.async_fetch()
+            data = await self._fetch_task
+        except asyncio.CancelledError:
+            if not self._stop_requested:
+                # Home Assistant is cancelling us, not the other way round. Cancellation is
+                # cooperative and swallowing this would strand the shutdown.
+                raise
+            self._stop_requested = False
+            raise UpdateFailed(
+                f"Scrape of {self.platform_id}:{self.account_name} was cancelled on request"
+            ) from None
         except DevCloudProviderError as err:
             raise UpdateFailed(f"Error communicating with {self.platform_id}: {err}") from err
         except Exception as err:
             raise UpdateFailed(f"Unexpected error fetching {self.platform_id} data: {err}") from err
+        finally:
+            self._fetch_task = None
 
         # Set before anything reads them, so a sensor refresh triggered by this update sees
         # totals matching the data it is reading.
