@@ -95,6 +95,16 @@ _REPO_METRICS: Final = (
     ("watchers", THING_WATCHER),
 )
 
+#: Fields the repository-detail walk supplies. A repository carrying none of them was not
+#: covered by that walk on this side of the diff, which is emphatically not the same as
+#: having none of them: a field nobody measured falls back to its default, and a default
+#: zero is indistinguishable from a measured zero. Reading one as the other is how a single
+#: poll announced 266 repositories gaining their first watcher simultaneously.
+_DETAIL_EVIDENCE: Final = ("releases", "branches", "tags", "security_alerts")
+
+#: Counters that come from that walk rather than from the repository listing.
+_DETAIL_METRICS: Final = frozenset({"watchers"})
+
 #: Collections nested inside a repository. Carried in the snapshot, never in a payload —
 #: one repository's releases and their assets are larger than the whole event budget.
 _BULKY_REPO_KEYS: Final = frozenset(
@@ -249,6 +259,11 @@ def _removals_trustworthy(old: Item, new: Item, field_name: str, repository: str
     return True
 
 
+def _has_detail(repo: Item) -> bool:
+    """Whether the detail walk covered this repository in this snapshot."""
+    return any(repo.get(field) for field in _DETAIL_EVIDENCE)
+
+
 def _first(old: Any, new: Any) -> bool:
     """Whether a counter just moved off nothing for the first time."""
     return not old and bool(new)
@@ -308,7 +323,17 @@ def _one_repo(name: str, old: Item, new: Item) -> list[Change]:
     url = str(new.get("url") or old.get("url") or "")
     changes: list[Change] = []
 
+    # Whether the detail walk covered this repository on *both* sides. Everything gated on
+    # this comes from that walk - watchers, releases, refs, advisories, download counts -
+    # and is otherwise being compared against a default rather than a measurement. The
+    # comparison is then meaningless in both directions: things appear when the walk
+    # arrives and vanish when it is skipped. The values stay in the snapshot either way;
+    # they simply are not announced as news.
+    detail_both = _has_detail(old) and _has_detail(new)
+
     for metric, thing in _REPO_METRICS:
+        if metric in _DETAIL_METRICS and not detail_both:
+            continue
         before, after = old.get(metric, 0), new.get(metric, 0)
         if before == after:
             continue
@@ -376,12 +401,16 @@ def _one_repo(name: str, old: Item, new: Item) -> list[Change]:
             }
         )
 
-    changes += _release_changes(name, old, new)
-    changes += _security_changes(name, old, new)
-    changes += _download_changes(name, old, new)
+    if detail_both:
+        changes += _release_changes(name, old, new)
+        changes += _security_changes(name, old, new)
+        changes += _download_changes(name, old, new)
+        changes += _ref_changes(name, old, new, "branches", THING_BRANCH, "branch")
+        changes += _ref_changes(name, old, new, "tags", THING_TAG, "tag")
+
+    # Traffic is not part of that walk and carries its own baseline rule, so it is compared
+    # whether or not the detail walk has been anywhere near this repository.
     changes += _traffic_changes(name, old, new)
-    changes += _ref_changes(name, old, new, "branches", THING_BRANCH, "branch")
-    changes += _ref_changes(name, old, new, "tags", THING_TAG, "tag")
     changes += _thread_changes(name, old, new, "issues", THING_ISSUE, "issue")
     changes += _thread_changes(name, old, new, "prs", THING_PR, "pull_request")
     return changes

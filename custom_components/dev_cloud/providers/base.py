@@ -12,7 +12,7 @@ from typing import Any, ClassVar, cast
 from aiohttp import ClientSession
 from yarl import URL
 
-from ..models import DevCloudData, from_dict
+from ..models import DevCloudData, RepoData, from_dict
 from .scheduling import PageWalker, ResourcePolicy, ResourceScheduler
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,6 +66,29 @@ async def async_collect_running_jobs[T](
     if not any_succeeded:
         return None, []
     return len(jobs), jobs
+
+
+def _detail_of(repo: RepoData) -> dict[str, Any]:
+    """Rebuild one repository's entry in the detail resource, as the walk produced it.
+
+    Every field the provider's `_attach_detail` reads has to be here. It used to carry only
+    releases, branches and tags while attach also read `security_alerts` and `watchers`, so
+    both fell back to their dataclass defaults on a reload - an empty list and a zero. The
+    next successful walk then looked like 871 advisories appearing at once and 266
+    repositories gaining their first watcher simultaneously, on every single reload.
+    """
+    return {
+        "releases": repo.releases,
+        "branches": repo.branches,
+        "tags": repo.tags,
+        "security_alerts": repo.security_alerts,
+        "watchers": repo.watchers,
+    }
+
+
+def _has_detail(repo: RepoData) -> bool:
+    """Whether the detail walk ever covered this repository."""
+    return bool(repo.releases or repo.branches or repo.tags or repo.security_alerts)
 
 
 class DevCloudProviderError(Exception):
@@ -196,15 +219,7 @@ class BaseDevCloudProvider(ABC):
             if grouped:
                 self._resource_values[key] = grouped
 
-        detail = {
-            repo.full_name: {
-                "releases": repo.releases,
-                "branches": repo.branches,
-                "tags": repo.tags,
-            }
-            for repo in data.repos
-            if repo.releases or repo.branches or repo.tags
-        }
+        detail = {repo.full_name: _detail_of(repo) for repo in data.repos if _has_detail(repo)}
         if detail:
             self._resource_values["repo_detail"] = detail
 
@@ -220,14 +235,10 @@ class BaseDevCloudProvider(ABC):
             self._resource_values["traffic"] = traffic
 
         org_detail = {
-            repo.full_name: {
-                "releases": repo.releases,
-                "branches": repo.branches,
-                "tags": repo.tags,
-            }
+            repo.full_name: _detail_of(repo)
             for org in data.orgs
             for repo in org.repos
-            if repo.releases or repo.branches or repo.tags
+            if _has_detail(repo)
         }
         if org_detail:
             self._resource_values["org_repo_detail"] = org_detail

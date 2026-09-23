@@ -271,3 +271,49 @@ async def test_a_collection_the_platform_never_had_stays_absent(provider: Any) -
     provider.restore(storage.build_snapshot("github", "Bluscream", data))
 
     assert "notifications" not in provider.collected_resources()
+
+
+async def test_restore_carries_every_field_the_detail_attach_reads(provider: Any) -> None:
+    """The cause of the watcher flapping, and the advisory storms alongside it.
+
+    restore() rebuilt the detail resource with releases, branches and tags while the
+    provider's _attach_detail also reads security_alerts and watchers. Both fell back to
+    their dataclass defaults on every reload - an empty list and a zero - so the next
+    successful walk looked like 871 advisories appearing at once and 266 repositories
+    gaining their first watcher. The polls in between read it the other way round, which is
+    the tell: the values were flapping, not changing.
+    """
+    repo = RepoData(name="r", full_name="Bluscream/r", url="u", watchers=7)
+    repo.branches = [{"name": "main", "sha": "abc"}]
+    repo.security_alerts = [{"number": 1, "ghsa": "GHSA-1", "severity": "HIGH"}]
+
+    org_repo = RepoData(name="x", full_name="Org/x", url="u", watchers=3)
+    org_repo.tags = [{"name": "v1", "sha": "abc"}]
+    org_repo.security_alerts = [{"number": 2, "ghsa": "GHSA-2", "severity": "LOW"}]
+
+    data = DevCloudData(
+        profile=ProfileData(username="Bluscream"),
+        repos=[repo],
+        orgs=[OrgData(name="Org", is_owned=True, repos=[org_repo])],
+    )
+    provider.restore(storage.build_snapshot("github", "Bluscream", data))
+
+    detail = provider._resource_values["repo_detail"]["Bluscream/r"]
+    assert detail["watchers"] == 7
+    assert [a["ghsa"] for a in detail["security_alerts"]] == ["GHSA-1"]
+
+    org_detail = provider._resource_values["org_repo_detail"]["Org/x"]
+    assert org_detail["watchers"] == 3
+    assert [a["ghsa"] for a in org_detail["security_alerts"]] == ["GHSA-2"]
+
+
+async def test_a_repository_known_only_by_its_advisories_still_restores(provider: Any) -> None:
+    """A repository with no refs at all was previously dropped from the detail resource
+    entirely, so its advisories came back as new on the next walk."""
+    repo = RepoData(name="r", full_name="Bluscream/r", url="u")
+    repo.security_alerts = [{"number": 1, "ghsa": "GHSA-1"}]
+
+    data = DevCloudData(profile=ProfileData(username="Bluscream"), repos=[repo])
+    provider.restore(storage.build_snapshot("github", "Bluscream", data))
+
+    assert "Bluscream/r" in provider._resource_values["repo_detail"]

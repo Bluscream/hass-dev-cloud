@@ -112,10 +112,14 @@ def test_losing_a_star_reports_a_negative_delta() -> None:
 
 
 def test_forks_and_watchers_get_their_own_change_not_just_a_field_list() -> None:
-    """The first fork and the first watcher are worth announcing on their own."""
+    """The first fork and the first watcher are worth announcing on their own.
+
+    Both sides carry a branch because watchers come from the detail walk, and a repository
+    that walk has not covered has no watcher figure to compare - see the guard tests below.
+    """
     result = events.diff(
-        _snap(repos=[_repo("o/a", forks=0, watchers=0)]),
-        _snap(repos=[_repo("o/a", forks=1, watchers=2)]),
+        _snap(repos=[_repo("o/a", forks=0, watchers=0, branches=("main",))]),
+        _snap(repos=[_repo("o/a", forks=1, watchers=2, branches=("main",))]),
     )
     assert _one(result, "forks_changed")["delta"] == 1
     assert _one(result, "watchers_changed")["delta"] == 2
@@ -141,7 +145,8 @@ def test_a_counter_that_was_already_moving_is_not_a_first() -> None:
 
 def test_a_repositorys_very_first_release_is_marked_as_a_first() -> None:
     first = events.diff(
-        _snap(repos=[_repo("o/a")]), _snap(repos=[_repo("o/a", releases=("v1",))])
+        _snap(repos=[_repo("o/a", branches=("main",))]),
+        _snap(repos=[_repo("o/a", branches=("main",), releases=("v1",))]),
     )
     assert _one(first, "new_release")["first"] is True
 
@@ -644,3 +649,61 @@ def test_one_oversized_change_is_truncated_rather_than_dropped() -> None:
     assert kept["detail"] == {"truncated": True}
     assert "new" not in kept
     assert _payload_size(batches[0]) < events.MAX_EVENT_DATA_BYTES
+
+
+# --- a measurement nobody took is not a zero --------------------------------------------
+
+
+def test_a_repository_the_detail_walk_missed_reports_no_watcher_change() -> None:
+    """The bug this guard exists for, exactly as it happened.
+
+    restore() rebuilt the detail resource without watchers, so the field fell back to its
+    dataclass default of zero on every reload. The next successful walk then read 0 -> 1
+    across 266 repositories at once and called every one of them a first watcher. Half the
+    polls read it the other way, 1 -> 0, which is the tell: it was flapping, not changing.
+    """
+    unwalked = _repo("o/a", watchers=0)
+    walked = _repo("o/a", watchers=1, branches=("main",), releases=("v1",))
+
+    assert "watchers_changed" not in _kinds(events.diff(_snap(repos=[unwalked]), _snap(repos=[walked])))
+    assert "watchers_changed" not in _kinds(events.diff(_snap(repos=[walked]), _snap(repos=[unwalked])))
+
+
+def test_a_real_watcher_change_is_still_reported() -> None:
+    """The guard must not silence the thing it is guarding."""
+    before = _repo("o/a", watchers=3, branches=("main",))
+    after = _repo("o/a", watchers=4, branches=("main",))
+
+    assert _one(events.diff(_snap(repos=[before]), _snap(repos=[after])), "watchers_changed")["delta"] == 1
+
+
+def test_advisories_arriving_with_the_walk_are_not_announced_as_new() -> None:
+    """871 advisories appearing at once meant the walk had returned, not that they had."""
+    unwalked = _repo("o/a")
+    walked = _repo_with_alerts("o/a", tuple(range(1, 50)))
+    walked.branches = [{"name": "main", "sha": "s"}]
+
+    assert "new_security_alert" not in _kinds(events.diff(_snap(repos=[unwalked]), _snap(repos=[walked])))
+
+
+def test_a_genuinely_new_advisory_is_still_announced() -> None:
+    before = _repo_with_alerts("o/a", (1,))
+    after = _repo_with_alerts("o/a", (1, 2))
+
+    assert _one(events.diff(_snap(repos=[before]), _snap(repos=[after])), "new_security_alert")["subject"] == "GHSA-2"
+
+
+def test_releases_arriving_with_the_walk_are_not_announced_as_new() -> None:
+    unwalked = _repo("o/a")
+    walked = _repo("o/a", releases=("v1", "v2"), branches=("main",))
+
+    assert "new_release" not in _kinds(events.diff(_snap(repos=[unwalked]), _snap(repos=[walked])))
+
+
+def test_traffic_is_compared_even_where_the_detail_walk_has_never_been() -> None:
+    """Traffic is a separate resource with its own baseline rule; gating it on the detail
+    walk would silence it for every repository that walk has not reached."""
+    before = _repo_with_traffic("o/a", views={"2026-09-21": 10})
+    after = _repo_with_traffic("o/a", views={"2026-09-21": 10, "2026-09-22": 4})
+
+    assert _one(events.diff(_snap(repos=[before]), _snap(repos=[after])), "new_views")["delta"] == 4
