@@ -59,15 +59,98 @@ sensor. **An empty result still counts as collected**: zero unread notifications
 | Sponsors | sponsors | measurement |
 | Security Alerts | alerts | measurement |
 | Running Jobs | jobs | measurement |
+| Views | views | **total** |
+| Clones | clones | **total** |
+| Last Updated | — | — *(diagnostic)* |
 
-Only Downloads and Pulls are totals: a download once served is never un-served, so the
-change between periods is meaningful. Everything else counts things that can be deleted, so
-it is a measurement — Home Assistant records mean, min and max rather than an accumulating
+Downloads, Pulls, Views and Clones are totals: a download once served is never un-served, so
+the change between periods is meaningful. They are `total` rather than `total_increasing`
+because these figures *can* fall — an asset gets deleted, a traffic day ages out of the
+retention window — and `total_increasing` would read that fall as a counter reset and add the
+whole figure again as if it were new. Everything else counts things that can be deleted, so
+it is a measurement: Home Assistant records mean, min and max rather than an accumulating
 sum.
+
+**Every one of these produces long-term statistics**, exactly as `sensor.speedtest_download`
+does — hourly buckets kept for years after the detailed history has been purged, so a
+year-scale graph of stars or downloads works without keeping a year of raw states. Nothing
+extra is needed for this: a sensor earns statistics by declaring a state class, and every
+sensor above does.
 
 Attributes hold aggregates only. The profile sensor additionally carries `json_url`, the
 link to the snapshot; it is not repeated on every entity, because it is the same URL for all
-of them.
+of them. **Last Updated** is a timestamp rather than an age, so the frontend renders a live
+"3 minutes ago" by itself instead of the value having to be re-recorded every poll; its
+attributes carry the per-resource schedule, so a stalled collection is visible without
+opening the JSON.
+
+---
+
+## Buttons
+
+| Button | What it does |
+| :--- | :--- |
+| Force Refresh *(diagnostic)* | Clears every resource's schedule and polls immediately |
+
+Resources are normally paced against the API budget, which is what keeps the integration
+inside it but also means a change made a moment ago can take an hour to show. This is the
+override. It clears the minimum-cache floors and the failure backoff, but **not** the
+rate-limit ceiling: with the allowance spent nothing would succeed before it resets, and a
+button press is not an argument against that. Traffic stays a rotating sweep when forced —
+the next section is why it has to be.
+
+---
+
+## Repository traffic
+
+GitHub's traffic graphs — views, clones, referring sites and popular paths — answer who
+looked at a repository, and then forget: every endpoint serves a rolling **fourteen-day**
+window and nothing older. This integration keeps its own copy, so the history grows for as
+long as it runs.
+
+Two properties of that API shape the whole design.
+
+**Four requests per repository, and push access required.** Sweeping six hundred
+repositories at once is roughly half an hourly quota, so a sweep takes a fixed handful
+(`TRAFFIC_REPOS_PER_SWEEP`, default 10), least recently fetched first, and works its way
+round. Fourteen days of retention is the real deadline: as long as every repository is
+revisited inside it nothing is lost, and ten repositories every ten minutes covers six
+hundred in about ten hours. A constant per-sweep cost is also what lets the scheduler measure
+the resource once and pace it against the budget like any other. Repositories the token
+cannot push to answer 403 forever; they are remembered and retried weekly rather than
+rediscovered every sweep.
+
+**Views and clones are exact per day; referrers and paths are not.** A daily bucket can be
+accumulated honestly — the count for the 20th is the count for the 20th whenever you ask, and
+re-fetching a day still in progress replaces the partial figure rather than adding to it.
+Referrers and paths come back as totals over *overlapping* rolling windows, so summing
+successive fetches would count one visit up to fourteen times. Those keep the latest window
+plus `first_seen` and `last_seen`, which is both truthful and enough to answer "is this a
+referring site we have never had before".
+
+Days with no traffic are not stored: six hundred quiet repositories would otherwise be a
+quarter of a million empty buckets in the snapshot.
+
+If the quota runs out partway through a sweep it **stops** rather than spending the rest of
+the batch collecting refusals. What was fetched is kept, the repositories it did not reach
+keep their place at the front of the rotation, and the refusal itself tells the scheduler the
+allowance is gone, so every resource waits for the reset.
+
+---
+
+## The browsable index
+
+`/local/dev/<platform>/index.html` renders the same data for a person rather than a program:
+profile, headline totals, snapshot and resource-schedule metadata, and top-25 leaderboards —
+repositories by stars, downloads, releases, assets, forks, watchers, issues, PRs and
+advisories; organisations by repository count and stars; releases and individual assets by
+downloads; views, clones and referring sites; packages and gists.
+
+One self-contained file with no external requests: `/local` is served by Home Assistant
+itself, often on a LAN with no route out, and a page about your own data should not need
+somebody else's CDN to render. Accounts are discovered from the directory, so a second
+account on the same platform appears as a switcher with no code change. It is rewritten only
+when it would actually differ.
 
 ---
 
@@ -313,47 +396,75 @@ exhausted a GraphQL budget during development.
 
 ## Events
 
-Fired on the Home Assistant bus when **Enable events** is on. Every payload carries
-`platform` and `account`, and **the whole item** — so an automation never has to look
-anything up.
+Fired on the Home Assistant bus when **Enable events** is on. There are **two event types**,
+not one per kind of change: a consumer that had to enumerate twenty-nine of them to see
+anything was enumerating them wrong, and a busy poll fired hundreds of individual events.
+What a change *is* lives in the payload instead.
 
-| Event | Payload |
+### `dev_cloud_update`
+
+One poll's changes, batched. Every payload carries:
+
+| Field | Meaning |
 | :--- | :--- |
-| `dev_cloud_new_repo` | `repository`, `repo` (with its releases, branches, tags) |
-| `dev_cloud_repo_removed` | `repository`, `repo` — its last known state |
-| `dev_cloud_repo_changed` | `repository`, `old`, `new`, `changed` (field names) |
-| `dev_cloud_repo_renamed` | `repository`, `old`, `new`, `previous_name`, `name` |
-| `dev_cloud_repo_archived` | `repository`, `old`, `new`, `archived` |
-| `dev_cloud_repo_visibility_changed` | `repository`, `old`, `new`, `private` |
-| `dev_cloud_stars_changed` | `repository`, `old`, `new`, `stars`, `previous_stars`, `delta` |
-| `dev_cloud_forks_changed` | as above, with `forks` / `previous_forks` |
-| `dev_cloud_new_release` | `repository`, `tag`, `release` (with its assets) |
-| `dev_cloud_release_removed` | `repository`, `tag`, `release` |
-| `dev_cloud_release_changed` | `repository`, `tag`, `old`, `new`, `changed` |
-| `dev_cloud_new_branch` / `_branch_removed` | `repository`, `name`, `branch` |
-| `dev_cloud_new_tag` / `_tag_removed` | `repository`, `name`, `tag` |
-| `dev_cloud_new_issue` / `_issue_closed` | `repository`, `issue` |
-| `dev_cloud_new_pull_request` / `_pull_request_closed` | `repository`, `pull_request` |
-| `dev_cloud_new_package` / `_package_removed` | `name`, `package` |
-| `dev_cloud_package_changed` | `name`, `old`, `new`, `changed` |
-| `dev_cloud_new_org` / `_org_removed` | `name`, `organization` |
-| `dev_cloud_new_downloads` | `repository`, `delta`, `total`, `previous_total`, `assets`, `breakdown` |
-| `dev_cloud_new_pulls` | `name`, `package`, `delta`, `pulls`, `previous_pulls` |
-| `dev_cloud_new_security_alert` | `repository`, `alert`, `severity`, `package`, `ecosystem`, `ghsa`, `cve`, `cvss`, `summary`, `url` |
-| `dev_cloud_security_alerts_resolved` | `repository`, `resolved`, `remaining`, `alerts` |
-| `dev_cloud_new_notification` | `title`, `repository`, `url`, `reason`, `subject_type`, `notification` |
+| `platform`, `account` | Which entry this came from |
+| `run_id` | The poll's own timestamp — the same on every chunk of one poll |
+| `chunk`, `chunks` | Position in the run, so three parts of one digest are not three digests |
+| `count`, `total` | Changes in this chunk, and in the whole poll |
+| `changes` | The list below |
 
-`delta` is signed, so one trigger covers a star gained and a star lost.
+Chunks are sized by **serialising**, not estimated per item: a repository description and a
+security advisory differ by two orders of magnitude, so any per-item guess is wrong in one
+direction or the other. Each chunk is kept well under the recorder's 32 KiB ceiling. A single
+change too large to ever fit loses its `old`/`new` and gains `detail: {truncated: true}`,
+rather than being dropped — the full item is always in the snapshot.
 
-Issue and pull request lists hold only open ones, so a disappearance means closed or merged
-rather than deleted.
+Each entry in `changes`:
+
+| Field | Meaning |
+| :--- | :--- |
+| `kind` | What happened: `stars_changed`, `new_release`, `new_referrer`, … |
+| `thing` | Coarse category to pick an emoji from: `star`, `release`, `referrer`, … |
+| `subject` | Already human-readable: a repository name, a tag, `#42`, a hostname |
+| `repository` | Where it happened, when that is a different thing from `subject` |
+| `url` | Somewhere to send a notification tap |
+| `old`, `new` | Before and after, on anything that changed value rather than appeared |
+| `delta` | Signed, present only when both sides are numeric |
+| `first` | This metric just left zero — see below |
+| `detail` | Small kind-specific extras: changed fields, a download breakdown |
+
+`kind` is the full vocabulary the old event types carried, so nothing was lost by collapsing
+them; `thing` exists so a consumer can render a line without knowing all of them.
+
+### `dev_cloud_notification`
+
+One per newly arrived unread notification, carrying the same envelope plus the change
+itself. It keeps its own event type because a notification is already the unit a person acts
+on, and burying it as a line in a digest defeats the point.
+
+### Firsts
+
+`first: true` marks a counter leaving zero: a repository's first star, first fork, first
+watcher, first clone, first download, its first release ever, or a referring site never seen
+before. Only the diff knows the previous value, so a consumer computing this itself would
+need a history it does not have.
+
+Two deliberate exceptions. A brand-new account announces nothing at all, so its existing
+stars are not all "firsts". And a repository's **first traffic sweep** is a baseline rather
+than news: GitHub returns fourteen days at once, and reporting that as a delta would announce
+a fortnight of history as if it had just happened.
 
 ### How changes are detected
 
-Against the **previous snapshot**, not the previous objects. The provider mutates its cached
-objects in place, so comparing live objects would compare a thing against itself. The
-snapshot is built every poll anyway, so the diff is free — and because the same document is
-reloaded at startup, **events survive a restart** rather than starting from no baseline.
+Against the **previous snapshot**, not the previous objects, and **after** a poll finishes
+rather than while one is in flight. The provider mutates its cached objects in place, so
+comparing live objects would compare a thing against itself. The snapshot is built every poll
+anyway, so the diff is free — and because the same document is reloaded at startup, **events
+survive a restart** rather than starting from no baseline.
+
+A poll is routinely *partial*: each resource has its own schedule, and one that was not due
+keeps serving its previous value. Those compare equal and produce nothing, so a partial
+scrape reports exactly the parts that moved.
 
 ### What is deliberately not fired
 
@@ -364,24 +475,30 @@ package and organisation announces itself at once.
 keeps its previous value and is not compared, so a failed request can never look like a mass
 deletion.
 
-**Nothing when a collection empties entirely.** Everything vanishing in one poll is far more
-likely to be a bad response than a real deletion of all of it.
+**Nothing when a collection empties entirely** — at either level. An account whose whole
+repository list vanished in one poll is a bad response, not 580 deletions. The same rule
+applies *inside* a repository that survived: if its releases, branches, tags, issues, PRs or
+advisories come back empty while the repository itself is still there, that is a rate-limited
+or incomplete sub-request, not a mass deletion. Removals are only reported when something
+else in the same collection survived to prove the response was real. A repository that was
+genuinely deleted emits one `repo_removed` carrying its last known state, not forty lines
+about its refs.
 
 **New security alerts arrive individually; resolutions are batched.** A new advisory is
-something to act on, so each gets its own event with the package, GHSA id, CVE and CVSS
+something to act on, so each gets its own change with the package, GHSA id, CVE and CVSS
 score attached. Resolutions come in bulk — one dependency bump can clear dozens, and one
 repository here has 68 open — so they are summarised per repository.
 
 **Counters are batched per repository, not per asset.** Download counts tick upward
-constantly and this account holds 3,581 release assets, so an event per asset would be
+constantly and this account holds 3,581 release assets, so a change per asset would be
 unusable — but an account-wide total is too coarse to act on. The middle ground is one
-`dev_cloud_new_downloads` per *repository* whose assets moved, carrying that repository's
-`delta`, its running `total`, and a `breakdown` naming each asset and tag that contributed.
-`dev_cloud_new_pulls` works the same way, one event per image. Only increases are reported;
-a falling count means something was deleted, which `release_changed` covers.
+`new_downloads` per *repository* whose assets moved, carrying that repository's `delta`, its
+running `total`, and a `breakdown` naming each asset and tag that contributed. `new_pulls`
+works the same way, one per image. Only increases are reported; a falling count means
+something was deleted, which `release_changed` covers.
 
-Organisation repositories emit their own events — a star, an advisory or a download on one
-of them is the same occurrence as on any other repository. Whether they count towards the
+Organisation repositories produce their own changes — a star, an advisory or a download on
+one of them is the same occurrence as on any other repository. Whether they count towards the
 *totals* sensors is a separate question, decided by the organisation option.
 
 ### Example automation
@@ -389,30 +506,50 @@ of them is the same occurrence as on any other repository. Whether they count to
 ```yaml
 triggers:
   - trigger: event
-    event_type: dev_cloud_stars_changed
+    event_type: dev_cloud_update
   - trigger: event
-    event_type: dev_cloud_new_notification
-  - trigger: event
-    event_type: dev_cloud_new_release
-  - trigger: event
-    event_type: dev_cloud_new_downloads
+    event_type: dev_cloud_notification
+variables:
+  d: "{{ trigger.event.data }}"
+  things: >-
+    {{ {'repository': '🗃️', 'star': '⭐', 'fork': '🍴', 'watcher': '👁️',
+        'release': '🚀', 'download': '📥', 'security': '🛡️', 'view': '📈',
+        'clone': '📋', 'referrer': '🔗', 'notification': '🔔'} }}
 actions:
   - action: notify.mobile_app_phone
     data:
       title: >-
-        {% set d = trigger.event.data %}
-        {% if trigger.event.event_type == 'dev_cloud_stars_changed' %}
-          ⭐ {{ d.repository }} {{ '+' if d.delta > 0 else '' }}{{ d.delta }}
-        {% elif trigger.event.event_type == 'dev_cloud_new_release' %}
-          🚀 {{ d.repository }} {{ d.tag }}
-        {% elif trigger.event.event_type == 'dev_cloud_new_downloads' %}
-          📥 {{ "{:,}".format(d.delta) }} new downloads in {{ d.repository }}
+        {% if trigger.event.event_type == 'dev_cloud_notification' %}
+          🔔 {{ d.subject }}
         {% else %}
-          🔔 {{ d.repository or d.platform }}
+          ☁️ {{ d.count }} changes ({{ d.chunk }}/{{ d.chunks }})
         {% endif %}
       message: >-
-        {% set d = trigger.event.data %}
-        {{ d.title | default(d.new.description) | default(d.repository) }}
+        {% if trigger.event.event_type == 'dev_cloud_notification' %}
+          {{ d.repository }}
+        {% else %}
+          {% set ns = namespace(lines=[]) %}
+          {% for c in d.changes %}
+            {% set sign = ('+' if c.delta > 0 else '') ~ c.delta if c.delta is defined else '' %}
+            {% set ns.lines = ns.lines + [
+                 things.get(c.thing, '•') ~ ' ' ~ c.subject ~ ' ' ~ sign] %}
+          {% endfor %}
+          {{ ns.lines | join('\n') }}
+        {% endif %}
+```
+
+A `first` is worth separating out and sending louder:
+
+```yaml
+  - repeat:
+      for_each: >-
+        {{ d.changes | default([]) | selectattr('first', 'defined')
+                                   | selectattr('first') | list }}
+      sequence:
+        - action: notify.mobile_app_phone
+          data:
+            title: "🎉 First {{ repeat.item.thing }} — {{ repeat.item.subject }}"
+            message: "{{ repeat.item.repository }}"
 ```
 
 Events are the right trigger for anything you want pushed. A sensor says how many
